@@ -22,18 +22,20 @@ export function HistoryCard({
 
   return (
     <article
-      className={`rounded-xl border bg-acapomil-card p-4 transition ${
+      className={`rounded-xl border bg-acapomil-card p-5 md:p-6 transition ${
         active ? 'listening-glow border-acapomil-green' : 'border-acapomil-border'
       }`}
     >
-      <div className="mb-2 flex items-center justify-between gap-2 text-xs text-acapomil-muted">
+      <div className="mb-3 flex items-center justify-between gap-2 text-xs text-acapomil-muted">
         <span className="rounded-md bg-white/5 px-2 py-0.5 font-semibold text-sky-300">{badge}</span>
         <span>{time}</span>
       </div>
       <p className="text-sm text-gray-400 mb-1">Original</p>
-      <p className="text-base text-gray-200 mb-3 whitespace-pre-wrap">{item.original || '—'}</p>
+      <p className="text-base md:text-lg text-gray-200 mb-4 whitespace-pre-wrap break-words leading-relaxed">
+        {item.original || '—'}
+      </p>
       <p className="text-sm text-acapomil-green mb-1">Traduccion</p>
-      <p className="text-lg font-medium text-white mb-3 whitespace-pre-wrap">
+      <p className="text-xl md:text-2xl font-medium text-white mb-4 whitespace-pre-wrap break-words leading-relaxed">
         {item.translation || '—'}
       </p>
       <button

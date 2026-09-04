@@ -20,10 +20,13 @@ import { useTranslatorSocket } from './hooks/useTranslatorSocket';
 import { createSyncChannel } from './lib/broadcast';
 import type { HistoryItem, TranslateMode } from './lib/types';
 import {
+  formatVoiceOption,
   langForTranslation,
+  pickVoice,
   speakText,
   stopSpeaking,
-  voiceLabel,
+  voicesForLang,
+  waitForVoices,
 } from './lib/tts';
 
 function isProjectionRoute() {
@@ -37,6 +40,8 @@ const DEMO_PHRASE = {
     'Bienvenidos distinguidos invitados a la asamblea anual de ACAPOMIL.',
 };
 
+const VOICE_URI_KEY = 'acapomil-tts-voice-uri';
+
 export default function App() {
   if (isProjectionRoute()) return <ProjectionView />;
   return <ControlPanel />;
@@ -46,10 +51,63 @@ function ControlPanel() {
   const mic = useMicCapture();
   const tx = useTranslatorSocket();
   const [autoVoice, setAutoVoice] = useState(true);
-  const [voiceOut, setVoiceOut] = useState('es-CL');
+  const [voiceLang, setVoiceLang] = useState('es-CL');
+  const [voiceURI, setVoiceURI] = useState<string>(() => {
+    try {
+      return localStorage.getItem(VOICE_URI_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
+  const [voiceOptions, setVoiceOptions] = useState<SpeechSynthesisVoice[]>([]);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const syncRef = useRef<ReturnType<typeof createSyncChannel> | null>(null);
   const lastAutoId = useRef<string | null>(null);
+
+  const refreshVoiceList = (lang: string, preferred?: string) => {
+    const ranked = voicesForLang(lang);
+    setVoiceOptions(ranked);
+    const pref = preferred ?? voiceURI;
+    if (pref && ranked.some((v) => v.voiceURI === pref)) {
+      setVoiceURI(pref);
+      return;
+    }
+    const best = pickVoice(lang, pref || null);
+    if (best) {
+      setVoiceURI(best.voiceURI);
+      try {
+        localStorage.setItem(VOICE_URI_KEY, best.voiceURI);
+      } catch {
+        /* ignore */
+      }
+    } else {
+      setVoiceURI('');
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    const boot = async () => {
+      await waitForVoices();
+      if (cancelled) return;
+      const lang = langForTranslation(tx.mode);
+      setVoiceLang(lang);
+      refreshVoiceList(lang);
+    };
+    void boot();
+
+    const s = window.speechSynthesis;
+    const onChange = () => {
+      if (cancelled) return;
+      refreshVoiceList(voiceLang || langForTranslation(tx.mode));
+    };
+    s?.addEventListener?.('voiceschanged', onChange);
+    return () => {
+      cancelled = true;
+      s?.removeEventListener?.('voiceschanged', onChange);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     syncRef.current = createSyncChannel((msg) => {
@@ -83,7 +141,9 @@ function ControlPanel() {
 
   useEffect(() => {
     const lang = langForTranslation(tx.mode);
-    setVoiceOut(lang);
+    setVoiceLang(lang);
+    refreshVoiceList(lang);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tx.mode]);
 
   const deviceLabel = useMemo(() => {
@@ -102,14 +162,15 @@ function ControlPanel() {
 
   const speakItem = (item: HistoryItem) => {
     const lang = langForTranslation(item.mode, item.detectedLang);
-    setVoiceOut(lang);
+    setVoiceLang(lang);
     setSpeakingId(item.id);
     syncRef.current?.post({ kind: 'speak', text: item.translation, lang, id: item.id });
     speakText(
       item.translation,
       lang,
       () => setSpeakingId(item.id),
-      () => setSpeakingId(null)
+      () => setSpeakingId(null),
+      voiceURI || null
     );
   };
 
@@ -119,7 +180,13 @@ function ControlPanel() {
     const lang = langForTranslation(tx.mode, tx.history[0]?.detectedLang);
     setSpeakingId('live');
     syncRef.current?.post({ kind: 'speak', text, lang, id: 'live' });
-    speakText(text, lang, () => setSpeakingId('live'), () => setSpeakingId(null));
+    speakText(
+      text,
+      lang,
+      () => setSpeakingId('live'),
+      () => setSpeakingId(null),
+      voiceURI || null
+    );
   };
 
   const onStart = async () => {
@@ -170,12 +237,21 @@ function ControlPanel() {
     speakItem(item);
   };
 
+  const onVoiceSelect = (uri: string) => {
+    setVoiceURI(uri);
+    try {
+      localStorage.setItem(VOICE_URI_KEY, uri);
+    } catch {
+      /* ignore */
+    }
+  };
+
   const listening = tx.status === 'listening' || mic.capturing;
 
   return (
     <div className="min-h-screen bg-acapomil-bg">
-      <div className="mx-auto max-w-3xl px-4 py-6 space-y-4">
-        <header className="flex items-center justify-between gap-3">
+      <div className="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8 py-6 space-y-5">
+        <header className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <Crest className="w-11 h-11" />
             <div>
@@ -208,7 +284,7 @@ function ControlPanel() {
           </div>
         ) : null}
 
-        <section className="rounded-2xl border border-acapomil-border bg-acapomil-card p-5 space-y-4">
+        <section className="rounded-2xl border border-acapomil-border bg-acapomil-card p-5 md:p-6 space-y-4">
           <div>
             <p className="mb-2 text-xs font-semibold tracking-wider text-acapomil-muted">
               DISPOSITIVO DE AUDIO / MICROFONO
@@ -309,11 +385,11 @@ function ControlPanel() {
           ) : null}
         </section>
 
-        <section className="flex flex-col md:flex-row md:items-center justify-between gap-3 rounded-xl border border-acapomil-border bg-acapomil-card px-4 py-3">
+        <section className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 rounded-xl border border-acapomil-border bg-acapomil-card px-4 py-3">
           <button
             type="button"
             onClick={() => setAutoVoice((v) => !v)}
-            className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium ${
+            className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium shrink-0 ${
               autoVoice
                 ? 'border-acapomil-green/50 text-acapomil-green'
                 : 'border-white/10 text-acapomil-muted'
@@ -322,21 +398,28 @@ function ControlPanel() {
             <Volume2 className="h-4 w-4" />
             VOZ AUTOMATICA: {autoVoice ? 'ACTIVADA' : 'DESACTIVADA'}
           </button>
-          <label className="flex items-center gap-2 text-sm text-acapomil-muted">
-            Salida de voz:
+          <label className="flex flex-col sm:flex-row sm:items-center gap-2 text-sm text-acapomil-muted min-w-0 flex-1">
+            <span className="shrink-0">Voz TTS:</span>
             <select
-              className="rounded-lg border border-acapomil-border bg-[#0d1118] px-2 py-1.5 text-white"
-              value={voiceOut}
-              onChange={(e) => setVoiceOut(e.target.value)}
+              className="w-full min-w-0 rounded-lg border border-acapomil-border bg-[#0d1118] px-2 py-1.5 text-white text-sm"
+              value={voiceURI}
+              onChange={(e) => onVoiceSelect(e.target.value)}
             >
-              <option value="es-CL">{voiceLabel('es')}</option>
-              <option value="en-US">{voiceLabel('en')}</option>
+              {voiceOptions.length === 0 ? (
+                <option value="">Cargando voces del sistema…</option>
+              ) : (
+                voiceOptions.map((v) => (
+                  <option key={v.voiceURI} value={v.voiceURI}>
+                    {formatVoiceOption(v)}
+                  </option>
+                ))
+              )}
             </select>
           </label>
         </section>
 
         <section className="space-y-3">
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <StatusPill status={tx.status} />
               <h2 className="text-sm font-semibold tracking-wider text-acapomil-muted">
@@ -377,11 +460,11 @@ function ControlPanel() {
 
           {(tx.partial.original || tx.partial.translation) && (
             <article
-              className={`rounded-xl border bg-acapomil-card p-4 ${
+              className={`rounded-xl border bg-acapomil-card p-5 md:p-6 ${
                 speakingId === 'live' ? 'listening-glow border-acapomil-green' : 'border-sky-500/30'
               }`}
             >
-              <div className="mb-2 flex items-center justify-between text-xs text-sky-300">
+              <div className="mb-3 flex items-center justify-between text-xs text-sky-300">
                 <span className="font-semibold">EN VIVO</span>
                 <button
                   type="button"
@@ -393,11 +476,11 @@ function ControlPanel() {
                 </button>
               </div>
               <p className="text-sm text-gray-400 mb-1">Original</p>
-              <p className="text-base text-gray-200 mb-3 whitespace-pre-wrap">
+              <p className="text-base md:text-lg text-gray-200 mb-4 whitespace-pre-wrap break-words leading-relaxed">
                 {tx.partial.original || '…'}
               </p>
               <p className="text-sm text-acapomil-green mb-1">Traduccion</p>
-              <p className="text-xl font-medium whitespace-pre-wrap">
+              <p className="text-xl md:text-2xl lg:text-3xl font-medium whitespace-pre-wrap break-words leading-relaxed">
                 {tx.partial.translation || '…'}
               </p>
             </article>
