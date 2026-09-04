@@ -299,7 +299,6 @@ function ControlPanel() {
             }`}
           >
             <div className="absolute inset-0 bg-gradient-to-b from-[#0a0e14] via-[#0d1118] to-[#080b10]" />
-            <div className="absolute inset-x-0 bottom-0 h-2/3 bg-black/55 backdrop-blur-[2px]" />
             <div className="relative z-10 flex flex-1 flex-col">
               <div className="flex items-center justify-between gap-3 px-4 sm:px-6 pt-4 pb-2 text-xs text-sky-300">
                 <span className="font-semibold tracking-wider">
@@ -312,50 +311,69 @@ function ControlPanel() {
                 ) : null}
               </div>
 
-              <div className="flex flex-1 flex-col items-center justify-end px-4 sm:px-8 md:px-12 pb-8 md:pb-10 pt-6 text-center">
-                {subtitle.largeText || liveOriginal ? (
-                  <div className="w-full max-w-5xl space-y-3 md:space-y-4">
-                    {subtitle.originalLine ? (
-                      <p
-                        className="w-full font-normal text-gray-400/90 whitespace-pre-wrap break-words leading-relaxed"
-                        style={{
-                          fontSize: 'clamp(1rem, 1.5vw + 0.4rem, 1.45rem)',
-                        }}
-                      >
-                        {subtitle.originalLine}
-                      </p>
-                    ) : null}
-                    {subtitle.largeText && subtitle.largeText !== 'traduciendo…' ? (
-                      <p
-                        className="w-full font-normal text-gray-400/90 whitespace-pre-wrap break-words leading-relaxed"
-                        style={{
-                          fontSize: 'clamp(1rem, 1.5vw + 0.4rem, 1.45rem)',
-                        }}
-                      >
-                        {subtitle.largeText}
-                      </p>
-                    ) : subtitle.largeText === 'traduciendo…' && !subtitle.originalLine ? (
-                      <p
-                        className="w-full font-normal text-sky-400/80 whitespace-pre-wrap break-words leading-relaxed"
-                        style={{
-                          fontSize: 'clamp(1rem, 1.5vw + 0.4rem, 1.45rem)',
-                        }}
-                      >
-                        traduciendo…
-                      </p>
-                    ) : null}
+              {subtitle.largeText || liveOriginal ? (
+                <div className="flex flex-1 flex-col min-h-0 text-center">
+                  {/* Upper half — original speech */}
+                  <div className="flex-1 min-h-0 flex flex-col items-center justify-center px-4 sm:px-8 md:px-12 py-4 md:py-5">
+                    <div className="w-full max-w-5xl">
+                      {subtitle.originalLine ? (
+                        <p
+                          className="w-full font-normal text-gray-400/90 whitespace-pre-wrap break-words leading-relaxed"
+                          style={{ fontSize: 'clamp(1rem, 1.5vw + 0.4rem, 1.45rem)' }}
+                        >
+                          {subtitle.originalLine}
+                        </p>
+                      ) : (
+                        <p
+                          className="w-full font-normal text-gray-500/70 tracking-wide"
+                          style={{ fontSize: 'clamp(1rem, 1.5vw + 0.4rem, 1.45rem)' }}
+                        >
+                          …
+                        </p>
+                      )}
+                    </div>
                   </div>
-                ) : (
-                  <div className="flex flex-1 w-full flex-col items-center justify-center py-10 md:py-16">
-                    <p
-                      className="text-gray-500 font-normal tracking-wide"
-                      style={{ fontSize: 'clamp(1rem, 1.5vw + 0.4rem, 1.45rem)' }}
-                    >
-                      Escenario de subtítulos
-                    </p>
+
+                  <div className="shrink-0 mx-6 sm:mx-10 md:mx-14 border-t border-white/10" aria-hidden />
+
+                  {/* Lower half — translation */}
+                  <div className="flex-1 min-h-0 flex flex-col items-center justify-center px-4 sm:px-8 md:px-12 py-4 md:py-5">
+                    <div className="w-full max-w-5xl">
+                      {subtitle.largeText && subtitle.largeText !== 'traduciendo…' ? (
+                        <p
+                          className="w-full font-normal text-gray-400/90 whitespace-pre-wrap break-words leading-relaxed"
+                          style={{ fontSize: 'clamp(1rem, 1.5vw + 0.4rem, 1.45rem)' }}
+                        >
+                          {subtitle.largeText}
+                        </p>
+                      ) : subtitle.largeText === 'traduciendo…' ? (
+                        <p
+                          className="w-full font-normal text-sky-400/80 whitespace-pre-wrap break-words leading-relaxed"
+                          style={{ fontSize: 'clamp(1rem, 1.5vw + 0.4rem, 1.45rem)' }}
+                        >
+                          traduciendo…
+                        </p>
+                      ) : (
+                        <p
+                          className="w-full font-normal text-gray-500/70 tracking-wide"
+                          style={{ fontSize: 'clamp(1rem, 1.5vw + 0.4rem, 1.45rem)' }}
+                        >
+                          …
+                        </p>
+                      )}
+                    </div>
                   </div>
-                )}
-              </div>
+                </div>
+              ) : (
+                <div className="flex flex-1 w-full flex-col items-center justify-center px-4 py-10 md:py-16 text-center">
+                  <p
+                    className="text-gray-500 font-normal tracking-wide"
+                    style={{ fontSize: 'clamp(1rem, 1.5vw + 0.4rem, 1.45rem)' }}
+                  >
+                    Escenario de subtítulos
+                  </p>
+                </div>
+              )}
             </div>
           </article>
         </section>

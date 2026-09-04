@@ -244,7 +244,7 @@ export function ProjectionView() {
       <main className="relative flex-1 flex flex-col w-full min-h-0">
         <div className="absolute inset-0 bg-gradient-to-b from-black via-[#05070a] to-black" />
 
-        <div className="relative z-10 flex items-center justify-center pt-6 md:pt-8 px-6">
+        <div className="relative z-10 flex items-center justify-center pt-4 md:pt-6 px-6 shrink-0">
           <p
             className={`text-sm md:text-base font-semibold tracking-wide ${
               live ? 'text-acapomil-green' : 'text-acapomil-muted'
@@ -257,61 +257,79 @@ export function ProjectionView() {
           </p>
         </div>
 
-        <div className="relative z-10 flex-1 min-h-[18vh] md:min-h-[22vh]" />
+        {display.largeText || liveOriginal ? (
+          <div className="relative z-10 flex-1 flex flex-col min-h-0 w-full">
+            {/* Upper half — original speech */}
+            <div className="flex-1 min-h-0 flex flex-col items-center justify-center px-5 sm:px-10 lg:px-16 py-4 md:py-6">
+              <div className="w-full max-w-6xl xl:max-w-7xl mx-auto text-center">
+                {display.originalLine ? (
+                  <p
+                    className="font-normal text-gray-400/90 whitespace-pre-wrap break-words leading-relaxed drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]"
+                    style={{ fontSize: 'clamp(1.15rem, 2vw + 0.35rem, 1.85rem)' }}
+                  >
+                    {display.originalLine}
+                    {display.showTranslatingBadge && !display.hasRealTranslation ? (
+                      <span className="ml-2 text-sky-400/80 font-medium normal-case tracking-normal text-sm md:text-base">
+                        · traduciendo…
+                      </span>
+                    ) : null}
+                  </p>
+                ) : display.showTranslatingBadge && !display.hasRealTranslation ? (
+                  <p className="text-sky-400/80 text-sm md:text-base font-medium">traduciendo…</p>
+                ) : (
+                  <p
+                    className="font-normal text-gray-500/70 tracking-wide"
+                    style={{ fontSize: 'clamp(1.15rem, 2vw + 0.35rem, 1.85rem)' }}
+                  >
+                    …
+                  </p>
+                )}
+              </div>
+            </div>
 
-        <div className="relative z-10 flex flex-col items-center justify-end px-5 sm:px-10 lg:px-16 pb-8 md:pb-12 lg:pb-14 w-full">
-          {display.largeText || liveOriginal ? (
-            <div className="w-full max-w-6xl xl:max-w-7xl mx-auto text-center space-y-3 md:space-y-4">
-              {display.originalLine ? (
-                <p
-                  className="font-normal text-gray-400/90 whitespace-pre-wrap break-words leading-relaxed drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]"
-                  style={{
-                    fontSize: 'clamp(1.15rem, 2vw + 0.35rem, 1.85rem)',
-                  }}
-                >
-                  {display.originalLine}
-                  {display.showTranslatingBadge && !display.hasRealTranslation ? (
-                    <span className="ml-2 text-sky-400/80 font-medium normal-case tracking-normal text-sm md:text-base">
-                      · traduciendo…
-                    </span>
-                  ) : null}
-                </p>
-              ) : display.showTranslatingBadge && !display.hasRealTranslation ? (
-                <p className="text-sky-400/80 text-sm md:text-base font-medium">traduciendo…</p>
-              ) : null}
-              {display.largeText && display.largeText !== 'traduciendo…' ? (
-                <p
-                  className="font-normal text-gray-400/90 whitespace-pre-wrap break-words leading-relaxed drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]"
-                  style={{
-                    fontSize: 'clamp(1.15rem, 2vw + 0.35rem, 1.85rem)',
-                  }}
-                >
-                  {display.largeText}
-                </p>
-              ) : display.largeText === 'traduciendo…' && !display.originalLine ? (
-                <p className="font-normal text-sky-400/80 whitespace-pre-wrap break-words leading-relaxed"
-                  style={{
-                    fontSize: 'clamp(1.15rem, 2vw + 0.35rem, 1.85rem)',
-                  }}
-                >
-                  traduciendo…
-                </p>
-              ) : null}
+            <div className="shrink-0 mx-8 sm:mx-16 lg:mx-24 border-t border-white/10" aria-hidden />
+
+            {/* Lower half — translation */}
+            <div className="flex-1 min-h-0 flex flex-col items-center justify-center px-5 sm:px-10 lg:px-16 py-4 md:py-6">
+              <div className="w-full max-w-6xl xl:max-w-7xl mx-auto text-center">
+                {display.largeText && display.largeText !== 'traduciendo…' ? (
+                  <p
+                    className="font-normal text-gray-400/90 whitespace-pre-wrap break-words leading-relaxed drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]"
+                    style={{ fontSize: 'clamp(1.15rem, 2vw + 0.35rem, 1.85rem)' }}
+                  >
+                    {display.largeText}
+                  </p>
+                ) : display.largeText === 'traduciendo…' ? (
+                  <p
+                    className="font-normal text-sky-400/80 whitespace-pre-wrap break-words leading-relaxed"
+                    style={{ fontSize: 'clamp(1.15rem, 2vw + 0.35rem, 1.85rem)' }}
+                  >
+                    traduciendo…
+                  </p>
+                ) : (
+                  <p
+                    className="font-normal text-gray-500/70 tracking-wide"
+                    style={{ fontSize: 'clamp(1.15rem, 2vw + 0.35rem, 1.85rem)' }}
+                  >
+                    …
+                  </p>
+                )}
+              </div>
             </div>
-          ) : (
-            <div className="w-full max-w-5xl mx-auto text-center px-6 py-10 md:py-14">
-              <p
-                className="font-normal text-gray-500 tracking-wide break-words"
-                style={{ fontSize: 'clamp(1.15rem, 2vw + 0.35rem, 1.85rem)' }}
-              >
-                ESPERANDO ALOCUCIÓN...
-              </p>
-              <p className="mt-3 text-acapomil-muted text-sm md:text-base">
-                La traducción aparecerá automáticamente en pantalla
-              </p>
-            </div>
-          )}
-        </div>
+          </div>
+        ) : (
+          <div className="relative z-10 flex-1 flex flex-col items-center justify-center px-6 py-10 md:py-14">
+            <p
+              className="font-normal text-gray-500 tracking-wide break-words text-center"
+              style={{ fontSize: 'clamp(1.15rem, 2vw + 0.35rem, 1.85rem)' }}
+            >
+              ESPERANDO ALOCUCIÓN...
+            </p>
+            <p className="mt-3 text-acapomil-muted text-sm md:text-base text-center">
+              La traducción aparecerá automáticamente en pantalla
+            </p>
+          </div>
+        )}
       </main>
 
       <footer className="flex items-center justify-between px-6 md:px-10 py-3 border-t border-white/10 text-xs tracking-[0.2em] text-acapomil-muted uppercase shrink-0">
