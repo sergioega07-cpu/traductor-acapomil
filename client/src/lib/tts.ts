@@ -1,4 +1,6 @@
-/** Best-effort speechSynthesis helpers: score premium/natural voices, wait for voiceschanged. */
+/** Best-effort speechSynthesis helpers: score premium/natural voices, wait for voiceschanged.
+ *  Long-utterance fix: chunk text + Chrome resume interval so speech doesn't cut off early.
+ */
 
 const QUALITY_BONUS = [
   /premium/i,
@@ -75,6 +77,10 @@ const ES_LOCALE_RANK = [
 
 const EN_LOCALE_RANK = ['en-us', 'en-gb', 'en-au', 'en-ie', 'en-za', 'en-in'];
 
+/** Target chunk length for Chrome speechSynthesis (cuts off long utterances). */
+const CHUNK_MIN = 180;
+const CHUNK_MAX = 220;
+
 export type VoiceChoice = {
   name: string;
   lang: string;
@@ -84,9 +90,94 @@ export type VoiceChoice = {
 
 let voicesReadyPromise: Promise<SpeechSynthesisVoice[]> | null = null;
 
+/** Active speak session state — cleared by stopSpeaking. */
+let chunkQueue: string[] = [];
+let resumeIntervalId: number | null = null;
+let speakGeneration = 0;
+let sessionOnEnd: (() => void) | null = null;
+
 function synth(): SpeechSynthesis | null {
   if (typeof window === 'undefined' || !window.speechSynthesis) return null;
   return window.speechSynthesis;
+}
+
+function clearResumeInterval() {
+  if (resumeIntervalId != null) {
+    window.clearInterval(resumeIntervalId);
+    resumeIntervalId = null;
+  }
+}
+
+function startResumeInterval() {
+  clearResumeInterval();
+  const s = synth();
+  if (!s) return;
+  // Chrome bug: speechSynthesis pauses/stops long utterances silently.
+  resumeIntervalId = window.setInterval(() => {
+    if (s.speaking) s.resume();
+  }, 10000);
+}
+
+/**
+ * Split text into ~180–220 char chunks at punctuation / word boundaries.
+ * Keeps sentences intact when possible so TTS sounds natural.
+ */
+export function splitIntoChunks(text: string, minLen = CHUNK_MIN, maxLen = CHUNK_MAX): string[] {
+  const cleaned = text.replace(/\s+/g, ' ').trim();
+  if (!cleaned) return [];
+  if (cleaned.length <= maxLen) return [cleaned];
+
+  const chunks: string[] = [];
+  let remaining = cleaned;
+
+  while (remaining.length > maxLen) {
+    // Prefer sentence-ending punctuation in the sweet spot, else any punctuation, else space.
+    const window = remaining.slice(0, maxLen);
+    const searchFrom = Math.min(minLen, window.length);
+    let cut = -1;
+    const sentenceEnd = /[.!?…。！？][\s"')\]]*$/;
+    // Walk backwards from maxLen looking for a sentence boundary past minLen
+    for (let i = window.length - 1; i >= searchFrom; i--) {
+      const candidate = window.slice(0, i + 1);
+      if (sentenceEnd.test(candidate) || /[.!?…。！？]\s/.test(window.slice(Math.max(0, i - 1), i + 2))) {
+        // Prefer ending right after punctuation (+ optional closing quote/space)
+        if (/[.!?…。！？]/.test(window[i]) || (/\s/.test(window[i]) && /[.!?…。！？]/.test(window[i - 1] || ''))) {
+          cut = i + 1;
+          // Include trailing whitespace after punctuation
+          while (cut < window.length && /\s/.test(window[cut])) cut++;
+          break;
+        }
+      }
+    }
+
+    if (cut < 0) {
+      // Soft punctuation: comma, semicolon, colon, dash
+      for (let i = window.length - 1; i >= searchFrom; i--) {
+        if (/[,;:，；：—–-]/.test(window[i]) && (i + 1 >= window.length || /\s/.test(window[i + 1]))) {
+          cut = i + 1;
+          while (cut < window.length && /\s/.test(window[cut])) cut++;
+          break;
+        }
+      }
+    }
+
+    if (cut < 0) {
+      // Last resort: break on whitespace
+      const lastSpace = window.lastIndexOf(' ');
+      if (lastSpace >= searchFrom) {
+        cut = lastSpace + 1;
+      } else {
+        cut = maxLen;
+      }
+    }
+
+    const piece = remaining.slice(0, cut).trim();
+    if (piece) chunks.push(piece);
+    remaining = remaining.slice(cut).trim();
+  }
+
+  if (remaining) chunks.push(remaining);
+  return chunks;
 }
 
 export function waitForVoices(): Promise<SpeechSynthesisVoice[]> {
@@ -234,6 +325,68 @@ export function pickVoice(
   return null;
 }
 
+function speakNextChunk(
+  gen: number,
+  lang: string,
+  preferredVoiceURI: string | null | undefined,
+  isFirst: boolean,
+  onStart?: () => void
+) {
+  if (gen !== speakGeneration) return;
+  const s = synth();
+  if (!s) {
+    finishSession(gen);
+    return;
+  }
+
+  const next = chunkQueue.shift();
+  if (!next) {
+    finishSession(gen);
+    return;
+  }
+
+  const u = new SpeechSynthesisUtterance(next);
+  u.lang = lang;
+  u.rate = 1.03;
+  u.pitch = 1.0;
+  u.volume = 1;
+
+  const voice = pickVoice(lang, preferredVoiceURI);
+  if (voice) {
+    u.voice = voice;
+    u.lang = voice.lang || lang;
+  }
+
+  u.onstart = () => {
+    if (gen !== speakGeneration) return;
+    if (isFirst) onStart?.();
+  };
+  u.onend = () => {
+    if (gen !== speakGeneration) return;
+    speakNextChunk(gen, lang, preferredVoiceURI, false, onStart);
+  };
+  u.onerror = () => {
+    if (gen !== speakGeneration) return;
+    // Skip failed chunk and continue so a single error doesn't kill the rest.
+    speakNextChunk(gen, lang, preferredVoiceURI, false, onStart);
+  };
+
+  s.speak(u);
+}
+
+function finishSession(gen: number) {
+  if (gen !== speakGeneration) return;
+  clearResumeInterval();
+  chunkQueue = [];
+  const cb = sessionOnEnd;
+  sessionOnEnd = null;
+  cb?.();
+}
+
+/**
+ * Speak text with Chrome-safe chunking.
+ * Returns the first utterance (or a pending placeholder) for API compatibility.
+ */
 export function speakText(
   text: string,
   lang: string,
@@ -247,40 +400,30 @@ export function speakText(
     return null;
   }
 
-  const utter = (voicesLoaded: boolean) => {
-    s.cancel();
-    const u = new SpeechSynthesisUtterance(text.trim());
-    u.lang = lang;
-    // Healthier, natural delivery — slightly brisker than elderly-sounding defaults.
-    u.rate = 1.03;
-    u.pitch = 1.0;
-    u.volume = 1;
+  // Cancel any in-flight session before starting a new one.
+  stopSpeaking();
 
-    const voice = pickVoice(lang, preferredVoiceURI);
-    if (voice) {
-      u.voice = voice;
-      u.lang = voice.lang || lang;
-    } else if (!voicesLoaded) {
-      // Voices not ready yet; speak with lang only (browser default for that lang).
-    }
+  const gen = ++speakGeneration;
+  sessionOnEnd = onEnd ?? null;
+  chunkQueue = splitIntoChunks(text.trim());
+  startResumeInterval();
 
-    u.onstart = () => onStart?.();
-    u.onend = () => onEnd?.();
-    u.onerror = () => onEnd?.();
-    s.speak(u);
-    return u;
+  const startSpeaking = () => {
+    if (gen !== speakGeneration) return;
+    speakNextChunk(gen, lang, preferredVoiceURI, true, onStart);
   };
 
   const current = listVoices();
   if (current.length) {
-    return utter(true);
+    startSpeaking();
+  } else {
+    waitForVoices().then(() => {
+      if (gen !== speakGeneration) return;
+      startSpeaking();
+    });
   }
 
-  // Wait for voiceschanged, then speak with a scored voice.
-  waitForVoices().then(() => {
-    utter(true);
-  });
-  // Return a placeholder utterance so callers still get a non-null ref when possible.
+  // Placeholder utterance so callers still get a non-null ref when possible.
   const pending = new SpeechSynthesisUtterance(text.trim());
   pending.lang = lang;
   pending.rate = 1.03;
@@ -289,6 +432,10 @@ export function speakText(
 }
 
 export function stopSpeaking() {
+  speakGeneration += 1;
+  chunkQueue = [];
+  clearResumeInterval();
+  sessionOnEnd = null;
   const s = synth();
   if (s) s.cancel();
 }

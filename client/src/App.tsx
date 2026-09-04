@@ -441,39 +441,73 @@ function ControlPanel() {
             </div>
           </div>
 
-          {(tx.partial.original || tx.partial.translation) && (
-            <article
-              className={`rounded-xl border bg-acapomil-card p-5 md:p-6 ${
-                speakingId === 'live' ? 'listening-glow border-acapomil-green' : 'border-sky-500/30'
-              }`}
-            >
-              <div className="mb-3 flex items-center justify-between text-xs text-sky-300">
-                <span className="font-semibold">EN VIVO · {pairLabel}</span>
+          {/* Hero live subtitle stage — cinema caption style */}
+          <article
+            className={`relative w-full min-h-[40vh] md:min-h-[44vh] rounded-2xl border overflow-hidden flex flex-col ${
+              speakingId === 'live'
+                ? 'listening-glow border-acapomil-green'
+                : tx.partial.original || tx.partial.translation || allHistory[0]
+                  ? 'border-sky-500/40'
+                  : 'border-acapomil-border'
+            }`}
+          >
+            <div className="absolute inset-0 bg-gradient-to-b from-[#0a0e14] via-[#0d1118] to-[#080b10]" />
+            <div className="absolute inset-x-0 bottom-0 h-2/3 bg-black/55 backdrop-blur-[2px]" />
+            <div className="relative z-10 flex flex-1 flex-col">
+              <div className="flex items-center justify-between gap-3 px-4 sm:px-6 pt-4 pb-2 text-xs text-sky-300">
+                <span className="font-semibold tracking-wider">
+                  EN VIVO · {pairLabel}
+                </span>
                 <button
                   type="button"
                   onClick={speakLive}
-                  className="inline-flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-gray-200 hover:bg-white/5"
+                  disabled={!(tx.partial.translation || allHistory[0]?.translation)}
+                  className="inline-flex items-center gap-1 rounded-md border border-white/15 px-2.5 py-1.5 text-gray-200 hover:bg-white/5 disabled:opacity-40"
                 >
                   <Volume2 className="h-3.5 w-3.5" />
                   Escuchar subtítulo
                 </button>
               </div>
-              <p className="text-sm text-gray-400 mb-1">Original</p>
-              <p className="text-base md:text-lg text-gray-200 mb-4 whitespace-pre-wrap break-words leading-relaxed">
-                {tx.partial.original || '…'}
-              </p>
-              <p className="text-sm text-acapomil-green mb-1">Traducción</p>
-              <p className="text-xl md:text-2xl lg:text-3xl font-medium whitespace-pre-wrap break-words leading-relaxed">
-                {tx.partial.translation || '…'}
-              </p>
-            </article>
-          )}
 
-          {allHistory.length === 0 && !tx.partial.original && !tx.partial.translation ? (
-            <div className="rounded-xl border border-dashed border-acapomil-border px-4 py-10 text-center text-acapomil-muted text-sm">
-              Los subtítulos originales y traducidos aparecerán aquí al hablar.
+              <div className="flex flex-1 flex-col items-center justify-end px-4 sm:px-8 md:px-12 pb-8 md:pb-10 pt-6 text-center">
+                {tx.partial.original || tx.partial.translation || allHistory[0] ? (
+                  <>
+                    <p
+                      className="w-full max-w-5xl text-gray-400/90 mb-3 md:mb-4 whitespace-pre-wrap break-words leading-relaxed"
+                      style={{ fontSize: 'clamp(0.95rem, 1.4vw + 0.4rem, 1.35rem)' }}
+                    >
+                      {tx.partial.original || allHistory[0]?.original || '…'}
+                    </p>
+                    <div className="w-full max-w-6xl rounded-xl bg-black/45 px-4 py-5 md:px-8 md:py-7 border border-white/5 shadow-[0_8px_40px_rgba(0,0,0,0.45)]">
+                      <p
+                        className="font-semibold text-white whitespace-pre-wrap break-words"
+                        style={{
+                          fontSize: 'clamp(1.75rem, 4vw, 3.5rem)',
+                          lineHeight: 1.35,
+                        }}
+                      >
+                        {tx.partial.translation || allHistory[0]?.translation || '…'}
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex flex-1 w-full flex-col items-center justify-center py-10 md:py-16">
+                    <div className="w-full max-w-4xl rounded-xl bg-black/35 border border-white/5 px-6 py-12 md:py-16">
+                      <p
+                        className="text-gray-500 font-medium tracking-wide"
+                        style={{ fontSize: 'clamp(1.25rem, 2.5vw, 2rem)' }}
+                      >
+                        Escenario de subtítulos
+                      </p>
+                      <p className="mt-3 text-sm md:text-base text-acapomil-muted">
+                        Los subtítulos originales y traducidos aparecerán aquí al hablar — estilo cine.
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
-          ) : null}
+          </article>
 
           {noSubtitleHint ? (
             <div className="rounded-xl border border-sky-500/30 bg-sky-500/10 px-4 py-3 text-sm text-sky-100">
@@ -481,16 +515,21 @@ function ControlPanel() {
             </div>
           ) : null}
 
-          <div className="space-y-3">
-            {allHistory.map((item) => (
-              <HistoryCard
-                key={item.id}
-                item={item}
-                speakingId={speakingId}
-                onSpeak={speakItem}
-              />
-            ))}
-          </div>
+          {allHistory.length > 0 ? (
+            <div className="space-y-3 pt-2">
+              <h3 className="text-xs font-semibold tracking-wider text-acapomil-muted">
+                HISTORIAL
+              </h3>
+              {allHistory.map((item) => (
+                <HistoryCard
+                  key={item.id}
+                  item={item}
+                  speakingId={speakingId}
+                  onSpeak={speakItem}
+                />
+              ))}
+            </div>
+          ) : null}
         </section>
 
         {/* 2) Idiomas + voz + acciones */}
