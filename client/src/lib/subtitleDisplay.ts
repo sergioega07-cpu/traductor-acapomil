@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { textsLookIdentical } from './tts';
+import { isValidTranslationText, textsLookIdentical } from './tts';
 
 export type SubtitleDisplayState = {
   /** Text shown above (source), or empty when identical pending short window */
@@ -16,9 +16,9 @@ export type SubtitleDisplayState = {
 
 /**
  * Avoid permanent stuck "traduciendo…":
- * - While translation empty or === original: brief pending state
+ * - While translation empty, invalid ("es"), or === original: brief pending state
  * - After waitMs: show original large; badge only briefly then hide
- * - When translation differs: show it large, original small above
+ * - When translation differs and is valid: show it large, original small above
  */
 export function useSubtitleDisplay(
   original: string,
@@ -26,7 +26,8 @@ export function useSubtitleDisplay(
   waitMs = 1500
 ): SubtitleDisplayState {
   const orig = original.trim();
-  const trad = translation.trim();
+  const rawTrad = translation.trim();
+  const trad = isValidTranslationText(rawTrad) ? rawTrad : '';
   const identical = Boolean(orig) && Boolean(trad) && textsLookIdentical(orig, trad);
   const pending = Boolean(orig) && (!trad || identical);
   const hasRealTranslation = Boolean(trad) && !identical;
@@ -71,11 +72,11 @@ export function useSubtitleDisplay(
       };
     }
 
-    // Pending: empty or identical translation
+    // Pending: empty, invalid, or identical translation — never show "es" large
     if (pastWait) {
       return {
         originalLine: '',
-        largeText: orig || trad || '…',
+        largeText: orig || '…',
         showTranslatingBadge: showBadge,
         pending: true,
         hasRealTranslation: false,

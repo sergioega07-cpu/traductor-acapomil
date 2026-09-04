@@ -1,20 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeftRight,
-  Copy,
-  Eraser,
   Mic,
   Monitor,
   Play,
   RefreshCw,
   Shield,
-  Sparkles,
   Square,
   Volume2,
 } from 'lucide-react';
 import { Crest } from './components/Crest';
 import { StatusPill } from './components/StatusPill';
-import { HistoryCard } from './components/HistoryCard';
 import { ProjectionView } from './components/ProjectionView';
 import { useMicCapture } from './hooks/useMicCapture';
 import { useTranslatorSocket } from './hooks/useTranslatorSocket';
@@ -24,6 +20,7 @@ import type { HistoryItem, SourceLang, TargetLang } from './lib/types';
 import { deriveMode } from './lib/types';
 import {
   formatVoiceOption,
+  isValidTranslationText,
   langForTranslation,
   normalizeSpeakText,
   pickVoice,
@@ -39,12 +36,6 @@ function isProjectionRoute() {
   const q = new URLSearchParams(window.location.search);
   return window.location.pathname.includes('projection') || q.get('mode') === 'projection';
 }
-
-const DEMO_PHRASE = {
-  original: 'Welcome distinguished guests to the ACAPOMIL annual assembly.',
-  translation:
-    'Bienvenidos distinguidos invitados a la asamblea anual de ACAPOMIL.',
-};
 
 const VOICE_URI_KEY = 'acapomil-tts-voice-uri';
 
@@ -80,10 +71,8 @@ function ControlPanel() {
   });
   const [voiceOptions, setVoiceOptions] = useState<SpeechSynthesisVoice[]>([]);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
-  const [noSubtitleHint, setNoSubtitleHint] = useState(false);
   const syncRef = useRef<ReturnType<typeof createSyncChannel> | null>(null);
   const lastAutoId = useRef<string | null>(null);
-  const listeningSinceRef = useRef<number | null>(null);
   const lastSpokenRef = useRef('');
 
   const mode = useMemo(() => deriveMode(sourceLang, targetLang), [sourceLang, targetLang]);
@@ -191,19 +180,13 @@ function ControlPanel() {
     syncRef.current?.post({ kind: 'partial', partial: tx.partial, mode });
   }, [tx.partial, mode]);
 
-  const modeRef = useRef(mode);
-  const targetLangRef = useRef(targetLang);
-  const voiceURIRef = useRef(voiceURI);
-  modeRef.current = mode;
-  targetLangRef.current = targetLang;
-  voiceURIRef.current = voiceURI;
-
   useEffect(() => {
     const newest = tx.history[0];
     if (!newest) return;
     syncRef.current?.post({ kind: 'final', item: newest });
     if (newest.id === lastAutoId.current) return;
     if (!newest.translation?.trim()) return;
+    if (!isValidTranslationText(newest.translation)) return;
     if (!autoVoice) return;
     lastAutoId.current = newest.id;
     speakItem(newest);
@@ -232,32 +215,6 @@ function ControlPanel() {
     }
   }, [tx.mode, tx.targetLang]);
 
-  useEffect(() => {
-    const active = tx.status === 'listening' || mic.capturing;
-    const hasPartial = Boolean(tx.partial.original || tx.partial.translation);
-    if (!active) {
-      listeningSinceRef.current = null;
-      setNoSubtitleHint(false);
-      return;
-    }
-    if (hasPartial) {
-      listeningSinceRef.current = null;
-      setNoSubtitleHint(false);
-      return;
-    }
-    if (listeningSinceRef.current == null) {
-      listeningSinceRef.current = Date.now();
-    }
-    const elapsed = Date.now() - listeningSinceRef.current;
-    const remain = Math.max(0, 8000 - elapsed);
-    const t = window.setTimeout(() => {
-      if (!(tx.partial.original || tx.partial.translation)) {
-        setNoSubtitleHint(true);
-      }
-    }, remain);
-    return () => window.clearTimeout(t);
-  }, [tx.status, mic.capturing, tx.partial.original, tx.partial.translation]);
-
   const deviceLabel = useMemo(() => {
     if (mic.permission === 'denied') return 'Micrófono denegado por el navegador';
     if (mic.permission !== 'granted' || !mic.devices.length) {
@@ -275,6 +232,7 @@ function ControlPanel() {
   const speakItem = (item: HistoryItem) => {
     const translation = item.translation?.trim();
     if (!translation) return;
+    if (!isValidTranslationText(translation)) return;
     if (shouldWaitForRealTranslation(item.mode, item.original, translation, targetLang)) {
       return;
     }
@@ -326,32 +284,6 @@ function ControlPanel() {
     syncRef.current?.post({ kind: 'speak_stop' });
   };
 
-  const onClear = () => {
-    tx.clearHistory();
-    syncRef.current?.post({ kind: 'clear' });
-  };
-
-  const [demoItems, setDemoItems] = useState<HistoryItem[]>([]);
-  const allHistory = [...demoItems, ...tx.history];
-
-  const liveOriginal = tx.partial.original || allHistory[0]?.original || '';
-  const liveTranslation = tx.partial.translation || allHistory[0]?.translation || '';
-  const subtitle = useSubtitleDisplay(liveOriginal, liveTranslation);
-
-  const onTestPhrase = () => {
-    const item: HistoryItem = {
-      id: `demo-${Date.now()}`,
-      original: DEMO_PHRASE.original,
-      translation: DEMO_PHRASE.translation,
-      mode,
-      detectedLang: 'en',
-      ts: new Date().toISOString(),
-    };
-    setDemoItems((d) => [item, ...d]);
-    syncRef.current?.post({ kind: 'final', item });
-    speakItem(item);
-  };
-
   const onVoiceSelect = (uri: string) => {
     setVoiceURI(uri);
     try {
@@ -368,6 +300,12 @@ function ControlPanel() {
       ? `CONVERSACIÓN EN ↔ ES · audiencia ${targetLang === 'es' ? 'ES' : 'EN'}`
       : `${sourceLang === 'es' ? 'ES' : 'EN'} → ${targetLang === 'es' ? 'ES' : 'EN'} (un sentido)`;
 
+  // Live hero only — history kept in memory for sync/TTS, not rendered
+  const liveOriginal = tx.partial.original || tx.history[0]?.original || '';
+  const rawLiveTranslation = tx.partial.translation || tx.history[0]?.translation || '';
+  const liveTranslation = isValidTranslationText(rawLiveTranslation) ? rawLiveTranslation : '';
+  const subtitle = useSubtitleDisplay(liveOriginal, liveTranslation);
+
   return (
     <div className="min-h-screen bg-acapomil-bg">
       <div className="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8 py-6 space-y-5">
@@ -381,26 +319,13 @@ function ControlPanel() {
             </div>
             <StatusPill status={tx.status} />
           </div>
-          <div className="flex flex-col items-end gap-1">
-            <button
-              type="button"
-              onClick={openProjection}
-              className="inline-flex items-center gap-2 rounded-lg border border-acapomil-blue/60 px-3 py-2 text-sm text-sky-300 hover:bg-acapomil-blue/10"
-            >
-              <Monitor className="h-4 w-4" />
-              MODO PROYECCIÓN
-            </button>
-            <p className="max-w-[260px] text-right text-[11px] leading-snug text-acapomil-muted">
-              Úsalo en el televisor/proyector a pantalla completa (F11).
-            </p>
-          </div>
         </header>
 
         {tx.error || tx.status === 'disconnected' ? (
           <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200 flex flex-wrap items-center justify-between gap-3">
             <span>
               {tx.error ||
-                'Desconectado del servidor de traducción. Puedes seguir viendo el historial de subtítulos.'}
+                'Desconectado del servidor de traducción. Reconecta para continuar.'}
             </span>
             <button
               type="button"
@@ -421,50 +346,18 @@ function ControlPanel() {
         ) : null}
 
         <section className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <StatusPill status={tx.status} />
-              <h2 className="text-sm font-semibold tracking-wider text-acapomil-muted">
-                SUBTÍTULOS EN TIEMPO REAL
-              </h2>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={onTestPhrase}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-1.5 text-xs hover:bg-white/5"
-              >
-                <Sparkles className="h-3.5 w-3.5 text-sky-300" />
-                PROBAR FRASE
-              </button>
-              <button
-                type="button"
-                onClick={() => tx.copyAll()}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-1.5 text-xs hover:bg-white/5"
-                title="Copiar historial"
-              >
-                <Copy className="h-3.5 w-3.5" />
-                Copiar
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  onClear();
-                  setDemoItems([]);
-                }}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-1.5 text-xs hover:bg-white/5"
-              >
-                <Eraser className="h-3.5 w-3.5" />
-                Limpiar
-              </button>
-            </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <StatusPill status={tx.status} />
+            <h2 className="text-sm font-semibold tracking-wider text-acapomil-muted">
+              SUBTÍTULOS EN TIEMPO REAL
+            </h2>
           </div>
 
           <article
             className={`relative w-full min-h-[40vh] md:min-h-[44vh] rounded-2xl border overflow-hidden flex flex-col ${
               speakingId
                 ? 'listening-glow border-acapomil-green'
-                : tx.partial.original || tx.partial.translation || allHistory[0]
+                : tx.partial.original || liveTranslation || tx.history[0]
                   ? 'border-sky-500/40'
                   : 'border-acapomil-border'
             }`}
@@ -517,37 +410,12 @@ function ControlPanel() {
                       >
                         Escenario de subtítulos
                       </p>
-                      <p className="mt-3 text-sm md:text-base text-acapomil-muted">
-                        Los subtítulos originales y traducidos aparecerán aquí al hablar — estilo cine.
-                      </p>
                     </div>
                   </div>
                 )}
               </div>
             </div>
           </article>
-
-          {noSubtitleHint ? (
-            <div className="rounded-xl border border-sky-500/30 bg-sky-500/10 px-4 py-3 text-sm text-sky-100">
-              Hablando… si no aparece texto, prueba otro mic o Reconectar
-            </div>
-          ) : null}
-
-          {allHistory.length > 0 ? (
-            <div className="space-y-3 pt-2">
-              <h3 className="text-xs font-semibold tracking-wider text-acapomil-muted">
-                HISTORIAL
-              </h3>
-              {allHistory.map((item) => (
-                <HistoryCard
-                  key={item.id}
-                  item={item}
-                  speakingId={speakingId}
-                  onSpeak={speakItem}
-                />
-              ))}
-            </div>
-          ) : null}
         </section>
 
         <section className="rounded-2xl border border-acapomil-border bg-acapomil-card p-5 md:p-6 space-y-4">
@@ -600,12 +468,12 @@ function ControlPanel() {
               </label>
             </div>
             <p className="mt-2 text-xs text-acapomil-muted">
-              Modo enviado al servidor:{' '}
+              Modo:{' '}
               <span className="text-sky-300 font-semibold">{mode}</span>
               {mode === 'auto' ? (
                 <>
                   {' '}
-                  · conversación bidireccional · sesgo audiencia:{' '}
+                  · conversación bidireccional · audiencia:{' '}
                   <span className="text-sky-300 font-semibold">
                     {targetLang === 'es' ? 'español' : 'inglés'}
                   </span>
@@ -732,14 +600,7 @@ function ControlPanel() {
               <RefreshCw className="h-4 w-4" />
             </button>
           </div>
-          <p className="mt-2 text-xs text-acapomil-muted leading-relaxed">
-            iPhone: desbloqueado, cerca, Continuity Mic activado en Ajustes del Mac; pulsa refrescar.
-          </p>
         </section>
-
-        <footer className="pt-4 pb-8 text-center text-xs text-acapomil-muted">
-          Mic PCM 16 kHz → Gemini Live → WebSocket → UI · TTS con Voz automática · Conversación EN ↔ ES
-        </footer>
       </div>
     </div>
   );

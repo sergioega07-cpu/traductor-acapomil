@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AppStatus, HistoryItem, PartialSubtitles, ServerMessage, TargetLang, TranslateMode } from '../lib/types';
+import { isValidTranslationText } from '../lib/tts';
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_BASE_MS = 400;
@@ -96,20 +97,32 @@ export function useTranslatorSocket() {
           setStatus('error');
           break;
         case 'partial':
-        case 'interim':
-          setPartial((prev) => ({
-            original: msg.original ?? (msg.role === 'original' ? msg.text || prev.original : prev.original),
-            translation:
+        case 'interim': {
+          setPartial((prev) => {
+            const nextOriginal =
+              msg.original ?? (msg.role === 'original' ? msg.text || prev.original : prev.original);
+            let nextTranslation =
               msg.translation ??
-              (msg.role === 'translation' ? msg.text || prev.translation : prev.translation),
-          }));
+              (msg.role === 'translation' ? msg.text || prev.translation : prev.translation);
+            // Never show language-code garbage as the live subtitle
+            if (nextTranslation && !isValidTranslationText(nextTranslation)) {
+              nextTranslation =
+                msg.role === 'translation' || msg.translation != null ? prev.translation : nextTranslation;
+              if (nextTranslation && !isValidTranslationText(nextTranslation)) {
+                nextTranslation = '';
+              }
+            }
+            return { original: nextOriginal || '', translation: nextTranslation || '' };
+          });
           break;
+        }
         case 'final': {
           if (!msg.id) break;
+          const rawTrad = msg.translation || '';
           const item: HistoryItem = {
             id: msg.id,
             original: msg.original || '',
-            translation: msg.translation || '',
+            translation: isValidTranslationText(rawTrad) ? rawTrad.trim() : '',
             mode: (msg.mode as TranslateMode) || 'auto',
             detectedLang: msg.detectedLang,
             ts: msg.ts || new Date().toISOString(),

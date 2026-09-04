@@ -5,7 +5,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { WebSocketServer } from 'ws';
-import { openLiveSession } from './geminiLive.js';
+import { isValidTranslationText, openLiveSession, sanitizeTranslationText } from './geminiLive.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
@@ -61,9 +61,20 @@ wss.on('connection', (ws) => {
 
   const flushTurn = (force = false) => {
     const original = originalBuf.trim();
-    const translation = translationBuf.trim();
+    let translation = sanitizeTranslationText(translationBuf);
+    // Never flush a turn whose "translation" is a language code / garbage
+    if (translationBuf.trim() && !translation) {
+      console.warn('[flush] dropping invalid translation:', JSON.stringify(translationBuf));
+      translationBuf = '';
+      translation = '';
+    }
     if (!original && !translation) return;
+    // Avoid finals that only have garbage/empty translation unless forced with original only
     if (!force && (!original || !translation)) return;
+    if (force && original && !translation) {
+      // Keep original for display but do not invent a translation — client won't TTS empty
+      console.warn('[flush] turn complete without valid translation; sending original only');
+    }
     turnId += 1;
     send(ws, {
       type: 'final',
@@ -120,6 +131,9 @@ wss.on('connection', (ws) => {
               return;
             }
             if (ev.type === 'interim') {
+              if (ev.role === 'translation' && !isValidTranslationText(ev.text)) {
+                return;
+              }
               send(ws, {
                 type: 'interim',
                 role: ev.role,
@@ -133,7 +147,12 @@ wss.on('connection', (ws) => {
                 // Los transcripts de Live suelen ser acumulativos por turno
                 originalBuf = ev.text;
               } else if (ev.role === 'translation') {
-                translationBuf = ev.text;
+                const clean = sanitizeTranslationText(ev.text);
+                if (!clean) {
+                  // Keep previous valid translationBuf; do not overwrite with "es"
+                  return;
+                }
+                translationBuf = clean;
               }
               send(ws, {
                 type: 'partial',

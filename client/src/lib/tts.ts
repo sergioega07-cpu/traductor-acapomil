@@ -441,6 +441,26 @@ export function stopSpeaking() {
 }
 
 
+
+/** Reject language-code / nonsense translations (never display or TTS). */
+const INVALID_TRANSLATION_RE =
+  /^(es|en|esp|ing|spa|eng|es-es|en-us|en-gb|español|espanol|english|ingles|inglés)$/i;
+
+export function isValidTranslationText(text: string | undefined | null): boolean {
+  if (typeof text !== 'string') return false;
+  const t = text.trim();
+  if (!t) return false;
+  if (t.length <= 2) return false;
+  if (INVALID_TRANSLATION_RE.test(t)) return false;
+  if (
+    /^[.\s,;:!?\-_/()]*?(es|en|esp|ing)[.\s,;:!?\-_/()]*$/i.test(t) &&
+    t.length <= 6
+  ) {
+    return false;
+  }
+  return true;
+}
+
 /** Normalize text for TTS dedupe comparisons. */
 export function normalizeSpeakText(text: string): string {
   return text.trim().toLowerCase().replace(/\s+/g, ' ');
@@ -487,6 +507,7 @@ export function shouldWaitForRealTranslation(
   const o = original?.trim();
   const t = translation?.trim();
   if (!t) return true; // nothing to speak yet
+  if (!isValidTranslationText(t)) return true; // language codes / garbage
   if (o && textsLookIdentical(o, t)) return true; // still echoing source
   // Speak only when translation clearly differs from original
   void mode;

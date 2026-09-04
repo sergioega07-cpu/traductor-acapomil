@@ -1,16 +1,42 @@
 import { GoogleGenAI, Modality } from '@google/genai';
 
-const TRANSLATE_MODELS = [
-  'gemini-3.5-live-translate-preview',
-  'gemini-3.1-flash-live-preview',
-];
-
+/**
+ * Prefer Flash Live with explicit translate instructions — systemInstruction is
+ * respected and output transcription tends to be full sentences.
+ * Translate-preview is audio-first, drops system instructions, and has been
+ * observed returning language tags ("es"/"en") instead of sentences.
+ */
 const FLASH_MODELS = [
   'gemini-3.1-flash-live-preview',
   'gemini-2.5-flash-native-audio-preview-12-2025',
   'gemini-live-2.5-flash-preview',
   'gemini-2.0-flash-live-001',
 ];
+
+const TRANSLATE_FALLBACK_MODELS = [
+  'gemini-3.5-live-translate-preview',
+];
+
+/** Language-code / nonsense translations that must never be shown or TTS'd */
+const INVALID_TRANSLATION_RE = /^(es|en|esp|ing|spa|eng|es-es|en-us|en-gb|español|espanol|english|ingles|inglés)$/i;
+
+export function isValidTranslationText(text) {
+  if (typeof text !== 'string') return false;
+  const t = text.trim();
+  if (!t) return false;
+  if (t.length <= 2) return false;
+  if (INVALID_TRANSLATION_RE.test(t)) return false;
+  // Bare language tags with punctuation/spaces: "es.", " en "
+  if (/^[.\s,;:!?\-_/()]*?(es|en|esp|ing)[.\s,;:!?\-_/()]*$/i.test(t) && t.length <= 6) {
+    return false;
+  }
+  return true;
+}
+
+export function sanitizeTranslationText(text) {
+  if (!isValidTranslationText(text)) return '';
+  return text.trim();
+}
 
 /** Normalize optional target bias for auto mode: 'es' | 'en' */
 function normalizeTargetLang(targetLang, mode) {
@@ -25,40 +51,45 @@ function targetLangForMode(mode, targetLang) {
 
 function systemInstructionForMode(mode, targetLang) {
   const bias = normalizeTargetLang(targetLang, mode);
-  const biasLabel = bias === 'en' ? 'ingles' : 'espanol';
+  const biasLabel = bias === 'en' ? 'English' : 'Spanish';
+  const otherLabel = bias === 'en' ? 'Spanish' : 'English';
 
-  const common = `Eres un interprete simultaneo SOLO entre ingles y espanol para presentaciones en vivo con preguntas y respuestas (ACAPOMIL).
+  const common = `You are a simultaneous interpreter ONLY between English and Spanish for live presentations with Q&A (ACAPOMIL).
 
-Idiomas permitidos: unicamente ingles (EN) y espanol (ES). No traduzcas hacia ni desde japones, frances, portugues u otros idiomas.
+CRITICAL OUTPUT RULES (never break these):
+- Your ONLY output must be the FULL translated sentence in the target language.
+- NEVER output language codes or tags such as "es", "en", "esp", "ing", "ES", "EN".
+- NEVER echo partial language tags, ISO codes, or locale strings.
+- NEVER answer with a single word that is only a language name ("Spanish", "English", "español").
+- Output fluent, natural, complete sentences — not fragments, not codes.
+- Do not converse, greet, explain, or ask questions. Interpret only.
+- Allowed languages: English and Spanish only.
 
-Reglas estrictas:
-- Solo interpreta. No converses, no saludes, no hagas preguntas propias.
-- Responde unicamente con la traduccion del discurso escuchado (texto/audio de salida = traduccion).
-- Mantén el significado, el tono formal institucional y la brevedad.
-- Only English and Spanish.
-- Si el habla no es ingles ni espanol, intenta mapearlo a EN/ES solo si el sentido es claro; si no, permanece en silencio (no inventes traducciones a otros idiomas).`;
+The output audio transcription / text you produce IS the translation shown as subtitles. It must be a real sentence people can read aloud.`;
 
   if (mode === 'en-es') {
     return `${common}
 
-Modo UNIDIRECCIONAL (solo un sentido): INGLES → ESPANOL.
-Traduce ingles a espanol. Si oyes espanol, permanece en silencio. Ignora cualquier otro idioma.`;
+ONE-WAY mode: English → Spanish.
+Translate every English utterance into a complete Spanish sentence.
+If you hear Spanish, stay silent. Ignore other languages.`;
   }
   if (mode === 'es-en') {
     return `${common}
 
-Modo UNIDIRECCIONAL (solo un sentido): ESPANOL → INGLES.
-Traduce espanol a ingles. Si oyes ingles, permanece en silencio. Ignora cualquier otro idioma.`;
+ONE-WAY mode: Spanish → English.
+Translate every Spanish utterance into a complete English sentence.
+If you hear English, stay silent. Ignore other languages.`;
   }
   return `${common}
 
-Modo CONVERSACION BIDIRECCIONAL (EN ↔ ES) — por defecto para charlas con Q&A.
-- Si oyes INGLES → traduce SIEMPRE a ESPANOL (subtitulos + salida).
-- Si oyes ESPANOL → traduce SIEMPRE a INGLES (subtitulos + salida).
-- NUNCA permanezcas en silencio solo porque oyes el "otro" idioma: ambos sentidos deben traducirse.
-- Esto incluye preguntas del publico en espanol (deben salir en ingles para el orador) y respuestas en ingles (deben salir en espanol para la audiencia).
-- Preferencia solo si hay ambiguedad extrema de deteccion: sesgo hacia ${biasLabel}.
-- Nunca produzcas salida en un idioma que no sea ingles o espanol.`;
+BIDIRECTIONAL conversation mode (EN ↔ ES) — default for talks with Q&A:
+- If you hear ENGLISH → translate ALWAYS into a complete SPANISH sentence.
+- If you hear SPANISH → translate ALWAYS into a complete ENGLISH sentence.
+- NEVER stay silent just because you heard the "other" language — both directions must be translated.
+- Audience questions in Spanish must become English; English answers must become Spanish.
+- Only if language detection is extremely ambiguous, bias toward ${biasLabel} (vs ${otherLabel}).
+- Never produce output that is not a full English or Spanish sentence.`;
 }
 
 /**
@@ -67,8 +98,12 @@ Modo CONVERSACION BIDIRECCIONAL (EN ↔ ES) — por defecto para charlas con Q&A
  */
 export async function openLiveSession({ apiKey, mode, targetLang, onEvent, onError, onClose }) {
   const ai = new GoogleGenAI({ apiKey });
-  const useTranslate = mode === 'en-es' || mode === 'es-en';
-  const models = useTranslate ? TRANSLATE_MODELS : FLASH_MODELS;
+  // Flash first for all modes (real sentences via systemInstruction).
+  // Translate-preview only as connect fallback for one-way modes.
+  const models =
+    mode === 'en-es' || mode === 'es-en'
+      ? [...FLASH_MODELS, ...TRANSLATE_FALLBACK_MODELS]
+      : FLASH_MODELS;
   let lastError = null;
 
   for (const model of models) {
@@ -79,7 +114,13 @@ export async function openLiveSession({ apiKey, mode, targetLang, onEvent, onErr
         config,
         callbacks: {
           onopen: () => {
-            onEvent({ type: 'status', status: 'connected', model, mode, targetLang: normalizeTargetLang(targetLang, mode) });
+            onEvent({
+              type: 'status',
+              status: 'connected',
+              model,
+              mode,
+              targetLang: normalizeTargetLang(targetLang, mode),
+            });
           },
           onmessage: (message) => handleMessage(message, onEvent),
           onerror: (e) => {
@@ -128,30 +169,22 @@ function buildConfig(mode, model, targetLang) {
   const target = targetLangForMode(mode, targetLang);
 
   if (isTranslateModel) {
+    // Translate API: AUDIO only; systemInstruction often ignored.
+    // Still request both transcriptions — output transcription = translation text.
     return {
       responseModalities: [Modality.AUDIO],
       inputAudioTranscription: {},
       outputAudioTranscription: {},
       translationConfig: {
         targetLanguageCode: target,
-        // En auto, permitir eco del idioma objetivo segun sesgo EN/ES
+        // auto: echo when input already matches target so conversation doesn't go silent
         echoTargetLanguage: mode === 'auto',
-      },
-      // Refuerzo textual: solo EN↔ES (algunos modelos translate lo respetan como contexto)
-      systemInstruction: {
-        parts: [
-          {
-            text:
-              mode === 'auto'
-                ? `Bidirectional EN↔ES conversation mode for live Q&A. If you hear English, translate to Spanish. If you hear Spanish, translate to English. NEVER stay silent because you heard the "other" language — always translate both ways. Audience bias when ambiguous: ${target}. Only English and Spanish.`
-                : `Only English and Spanish. One-way mode toward ${target}. Detect which of the two is spoken and translate to the selected target ${target}. Do not translate to or from any other language.`,
-          },
-        ],
       },
     };
   }
 
-  // Flash Live: audio out + transcriptions = subtitulos; TTS del navegador para "Escuchar"
+  // Flash Live: AUDIO + transcriptions. Explicit instruction forces full-sentence translation.
+  // TEXT modality alone is not used — we need streaming speech interpretation with captions.
   return {
     responseModalities: [Modality.AUDIO],
     inputAudioTranscription: {},
@@ -200,7 +233,11 @@ function handleMessage(message, onEvent) {
     message?.outputAudioTranscription?.interim
   );
   if (interimOut) {
-    onEvent({ type: 'interim', role: 'translation', text: interimOut });
+    const clean = sanitizeTranslationText(interimOut);
+    if (clean) {
+      onEvent({ type: 'interim', role: 'translation', text: clean });
+    }
+    // Drop invalid interim (e.g. "es") so UI never flashes language codes
   }
 
   // Final / acumulado input = original (+ alternate names e.g. inputAudioTranscription)
@@ -231,24 +268,34 @@ function handleMessage(message, onEvent) {
     message?.outputTranscription;
   const outputText = pickText(outputObj);
   if (outputText) {
-    onEvent({
-      type: 'transcript',
-      role: 'translation',
-      text: outputText,
-      finished: Boolean(sc.turnComplete || outputObj?.finished),
-    });
+    const clean = sanitizeTranslationText(outputText);
+    if (clean) {
+      onEvent({
+        type: 'transcript',
+        role: 'translation',
+        text: clean,
+        finished: Boolean(sc.turnComplete || outputObj?.finished),
+      });
+    } else {
+      console.warn('[gemini] ignored invalid translation text:', JSON.stringify(outputText));
+    }
   }
 
   // Texto en modelTurn (por si algun modelo responde TEXT)
   const parts = sc.modelTurn?.parts || [];
   for (const part of parts) {
     if (part.text) {
-      onEvent({
-        type: 'transcript',
-        role: 'translation',
-        text: part.text,
-        finished: Boolean(sc.turnComplete),
-      });
+      const clean = sanitizeTranslationText(part.text);
+      if (clean) {
+        onEvent({
+          type: 'transcript',
+          role: 'translation',
+          text: clean,
+          finished: Boolean(sc.turnComplete),
+        });
+      } else {
+        console.warn('[gemini] ignored invalid modelTurn text:', JSON.stringify(part.text));
+      }
     }
     // Ignoramos audio inline de Gemini; usamos speechSynthesis en el cliente
   }

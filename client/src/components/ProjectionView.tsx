@@ -8,6 +8,7 @@ import { useSubtitleDisplay } from '../lib/subtitleDisplay';
 import {
   langForTranslation,
   normalizeSpeakText,
+  isValidTranslationText,
   shouldSkipDuplicateSpeak,
   shouldWaitForRealTranslation,
   speakText,
@@ -57,9 +58,9 @@ export function ProjectionView() {
         setPartial({ original: '', translation: '' });
         setLatest(null);
       } else if (msg.kind === 'speak') {
-        // One-shot from control (Voz automática / historial)
+        // One-shot from control (Voz automática)
         const t = msg.text?.trim();
-        if (!t) return;
+        if (!t || !isValidTranslationText(t)) return;
         if (shouldSkipDuplicateSpeak(t, lastSpokenRef.current, { isFinal: true })) {
           return;
         }
@@ -80,7 +81,8 @@ export function ProjectionView() {
   }, []);
 
   const liveOriginal = partial.original || latest?.original || '';
-  const liveTranslation = partial.translation || latest?.translation || '';
+  const rawLiveTranslation = partial.translation || latest?.translation || '';
+  const liveTranslation = isValidTranslationText(rawLiveTranslation) ? rawLiveTranslation : '';
   const display = useSubtitleDisplay(liveOriginal, liveTranslation);
   const detected = latest?.detectedLang;
   const live = status === 'listening';
@@ -88,8 +90,8 @@ export function ProjectionView() {
   const speakOnce = () => {
     const text = display.hasRealTranslation
       ? display.largeText
-      : (liveTranslation || liveOriginal || '').trim();
-    if (!text || text === 'traduciendo…') return;
+      : (liveTranslation || '').trim();
+    if (!text || text === 'traduciendo…' || !isValidTranslationText(text)) return;
     if (
       shouldWaitForRealTranslation(
         modeRef.current,
