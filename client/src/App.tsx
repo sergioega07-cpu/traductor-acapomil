@@ -6,7 +6,6 @@ import {
   Play,
   RefreshCw,
   Shield,
-  Smartphone,
   Square,
   Volume2,
 } from 'lucide-react';
@@ -567,22 +566,14 @@ function ControlPanel() {
                 value={
                   mic.devices.some((d) => d.deviceId === mic.deviceId)
                     ? mic.deviceId
-                    : mic.deviceId || ''
+                    : ''
                 }
                 onChange={(e) => mic.setDeviceId(e.target.value)}
                 onFocus={() => {
                   void mic.refreshDevices();
                 }}
-                onMouseDown={() => {
-                  void mic.refreshDevices();
-                }}
                 disabled={listening}
               >
-                {!mic.devices.some((d) => d.deviceId === mic.deviceId) && mic.deviceId ? (
-                  <option value={mic.deviceId}>
-                    Micrófono de iPhone / Continuity (reconectando…)
-                  </option>
-                ) : null}
                 {mic.devices.map((d) => (
                   <option key={d.deviceId} value={d.deviceId}>
                     {d.label || `Micrófono ${d.deviceId.slice(0, 6)}`}
@@ -609,21 +600,9 @@ function ControlPanel() {
             >
               <RefreshCw className="h-4 w-4" />
             </button>
-            <button
-              type="button"
-              onClick={() => {
-                void mic.scanPhoneMic();
-              }}
-              disabled={listening || mic.scanning}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2.5 text-sm font-medium text-sky-200 hover:bg-sky-500/20 disabled:opacity-50"
-              title="Buscar micrófono Continuity / iPhone"
-            >
-              <Smartphone className="h-4 w-4" />
-              {mic.scanning ? 'Buscando…' : 'Buscar iPhone'}
-            </button>
           </div>
           <p className="mt-2 text-xs text-acapomil-muted">
-            iPhone desbloqueado y cerca · Ajustes Mac → Continuity
+            Si usas iPhone: Continuity Mic en Ajustes del Mac; si no aparece, usa el mic del Mac.
           </p>
         </section>
       </div>
