@@ -34,7 +34,7 @@ export function HistoryCard({
       <p className="text-base md:text-lg text-gray-200 mb-4 whitespace-pre-wrap break-words leading-relaxed">
         {item.original || '—'}
       </p>
-      <p className="text-sm text-acapomil-green mb-1">Traduccion</p>
+      <p className="text-sm text-acapomil-green mb-1">Traducción</p>
       <p className="text-xl md:text-2xl font-medium text-white mb-4 whitespace-pre-wrap break-words leading-relaxed">
         {item.translation || '—'}
       </p>

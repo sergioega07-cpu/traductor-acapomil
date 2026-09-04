@@ -1,5 +1,11 @@
 export type TranslateMode = 'en-es' | 'es-en' | 'auto';
 
+/** Idioma de origen en el selector estilo Google Translate */
+export type SourceLang = 'auto' | 'es' | 'en';
+
+/** Idioma de destino (solo EN/ES) */
+export type TargetLang = 'es' | 'en';
+
 export type AppStatus =
   | 'idle'
   | 'ready'
@@ -28,6 +34,7 @@ export interface ServerMessage {
   status?: string;
   message?: string;
   mode?: TranslateMode | string;
+  targetLang?: TargetLang | string;
   model?: string;
   hasApiKey?: boolean;
   reason?: string;
@@ -38,4 +45,19 @@ export interface ServerMessage {
   id?: string;
   detectedLang?: string;
   ts?: string;
+}
+
+/** Deriva el modo WS (compatible) desde el selector origen/destino. */
+export function deriveMode(source: SourceLang, target: TargetLang): TranslateMode {
+  if (source === 'auto') return 'auto';
+  if (source === 'en' && target === 'es') return 'en-es';
+  if (source === 'es' && target === 'en') return 'es-en';
+  // Si origen === destino (no debería), forzar auto
+  return 'auto';
+}
+
+/** Idioma de salida TTS preferido según modo + destino UI. */
+export function targetLangFromUi(source: SourceLang, target: TargetLang): TargetLang {
+  if (source === 'auto') return target;
+  return target;
 }

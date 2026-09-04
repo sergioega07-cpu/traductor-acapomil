@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AppStatus, HistoryItem, PartialSubtitles, ServerMessage, TranslateMode } from '../lib/types';
+import type { AppStatus, HistoryItem, PartialSubtitles, ServerMessage, TargetLang, TranslateMode } from '../lib/types';
 
 function wsUrl() {
   // En desarrollo conectamos directo al backend (evita fallos del proxy WS de Vite)
@@ -19,6 +19,7 @@ export function useTranslatorSocket() {
   const [partial, setPartial] = useState<PartialSubtitles>({ original: '', translation: '' });
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [mode, setModeState] = useState<TranslateMode>('en-es');
+  const [targetLang, setTargetLangState] = useState<TargetLang>('es');
   const intentionalClose = useRef(false);
   const reconnectTimer = useRef<number | null>(null);
 
@@ -36,6 +37,9 @@ export function useTranslatorSocket() {
         if (msg.model) setModel(msg.model);
         if (msg.mode === 'en-es' || msg.mode === 'es-en' || msg.mode === 'auto') {
           setModeState(msg.mode);
+        }
+        if (msg.targetLang === 'en' || msg.targetLang === 'es') {
+          setTargetLangState(msg.targetLang);
         }
         const s = msg.status;
         if (s === 'ready') {
@@ -140,12 +144,13 @@ export function useTranslatorSocket() {
   }, []);
 
   const startSession = useCallback(
-    (m: TranslateMode) => {
+    (m: TranslateMode, tLang: TargetLang = 'es') => {
       setError(null);
       setPartial({ original: '', translation: '' });
       setModeState(m);
+      setTargetLangState(tLang);
       setStatus('connecting');
-      sendJson({ type: 'start', mode: m });
+      sendJson({ type: 'start', mode: m, targetLang: tLang });
     },
     [sendJson]
   );
@@ -163,9 +168,12 @@ export function useTranslatorSocket() {
   );
 
   const setMode = useCallback(
-    (m: TranslateMode) => {
+    (m: TranslateMode, tLang?: TargetLang) => {
       setModeState(m);
-      sendJson({ type: 'set_mode', mode: m });
+      const resolved: TargetLang =
+        tLang ?? (m === 'es-en' ? 'en' : 'es');
+      setTargetLangState(resolved);
+      sendJson({ type: 'set_mode', mode: m, targetLang: resolved });
     },
     [sendJson]
   );
@@ -197,6 +205,7 @@ export function useTranslatorSocket() {
     partial,
     history,
     mode,
+    targetLang,
     setMode,
     startSession,
     stopSession,

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ArrowLeftRight,
   Copy,
   Eraser,
   Mic,
@@ -18,7 +19,8 @@ import { ProjectionView } from './components/ProjectionView';
 import { useMicCapture } from './hooks/useMicCapture';
 import { useTranslatorSocket } from './hooks/useTranslatorSocket';
 import { createSyncChannel } from './lib/broadcast';
-import type { HistoryItem, TranslateMode } from './lib/types';
+import type { HistoryItem, SourceLang, TargetLang } from './lib/types';
+import { deriveMode } from './lib/types';
 import {
   formatVoiceOption,
   langForTranslation,
@@ -42,6 +44,17 @@ const DEMO_PHRASE = {
 
 const VOICE_URI_KEY = 'acapomil-tts-voice-uri';
 
+const SOURCE_OPTIONS: { value: SourceLang; label: string }[] = [
+  { value: 'auto', label: 'Detectar idioma' },
+  { value: 'es', label: 'Español' },
+  { value: 'en', label: 'Inglés' },
+];
+
+const TARGET_OPTIONS: { value: TargetLang; label: string }[] = [
+  { value: 'es', label: 'Español' },
+  { value: 'en', label: 'Inglés' },
+];
+
 export default function App() {
   if (isProjectionRoute()) return <ProjectionView />;
   return <ControlPanel />;
@@ -50,6 +63,8 @@ export default function App() {
 function ControlPanel() {
   const mic = useMicCapture();
   const tx = useTranslatorSocket();
+  const [sourceLang, setSourceLang] = useState<SourceLang>('en');
+  const [targetLang, setTargetLang] = useState<TargetLang>('es');
   const [autoVoice, setAutoVoice] = useState(true);
   const [voiceLang, setVoiceLang] = useState('es-CL');
   const [voiceURI, setVoiceURI] = useState<string>(() => {
@@ -63,6 +78,46 @@ function ControlPanel() {
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const syncRef = useRef<ReturnType<typeof createSyncChannel> | null>(null);
   const lastAutoId = useRef<string | null>(null);
+
+  const mode = useMemo(() => deriveMode(sourceLang, targetLang), [sourceLang, targetLang]);
+
+  const applyLangPair = (nextSource: SourceLang, nextTarget: TargetLang) => {
+    let src = nextSource;
+    let tgt = nextTarget;
+    if (src !== 'auto' && src === tgt) {
+      tgt = src === 'es' ? 'en' : 'es';
+    }
+    setSourceLang(src);
+    setTargetLang(tgt);
+    const m = deriveMode(src, tgt);
+    tx.setMode(m, tgt);
+  };
+
+  const onSourceChange = (value: SourceLang) => {
+    applyLangPair(value, targetLang);
+  };
+
+  const onTargetChange = (value: TargetLang) => {
+    if (sourceLang !== 'auto' && sourceLang === value) {
+      // Si el origen igualaría al destino, intercambiar origen al otro idioma
+      applyLangPair(value === 'es' ? 'en' : 'es', value);
+      return;
+    }
+    applyLangPair(sourceLang, value);
+  };
+
+  const onSwapLanguages = () => {
+    if (sourceLang === 'auto') {
+      // Estilo Google: el destino pasa a origen; el otro idioma a destino
+      const newSource: SourceLang = targetLang;
+      const newTarget: TargetLang = targetLang === 'es' ? 'en' : 'es';
+      applyLangPair(newSource, newTarget);
+      return;
+    }
+    const newSource: SourceLang = targetLang;
+    const newTarget: TargetLang = sourceLang === 'es' ? 'es' : 'en';
+    applyLangPair(newSource, newTarget);
+  };
 
   const refreshVoiceList = (lang: string, preferred?: string) => {
     const ranked = voicesForLang(lang);
@@ -90,7 +145,7 @@ function ControlPanel() {
     const boot = async () => {
       await waitForVoices();
       if (cancelled) return;
-      const lang = langForTranslation(tx.mode);
+      const lang = langForTranslation(mode, undefined, targetLang);
       setVoiceLang(lang);
       refreshVoiceList(lang);
     };
@@ -99,7 +154,7 @@ function ControlPanel() {
     const s = window.speechSynthesis;
     const onChange = () => {
       if (cancelled) return;
-      refreshVoiceList(voiceLang || langForTranslation(tx.mode));
+      refreshVoiceList(voiceLang || langForTranslation(mode, undefined, targetLang));
     };
     s?.addEventListener?.('voiceschanged', onChange);
     return () => {
@@ -112,8 +167,8 @@ function ControlPanel() {
   useEffect(() => {
     syncRef.current = createSyncChannel((msg) => {
       if (msg.kind === 'ping') {
-        syncRef.current?.post({ kind: 'status', status: tx.status, mode: tx.mode });
-        syncRef.current?.post({ kind: 'partial', partial: tx.partial, mode: tx.mode });
+        syncRef.current?.post({ kind: 'status', status: tx.status, mode });
+        syncRef.current?.post({ kind: 'partial', partial: tx.partial, mode });
         syncRef.current?.post({ kind: 'history', items: tx.history });
       }
     });
@@ -122,12 +177,12 @@ function ControlPanel() {
 
   // Sync projection window
   useEffect(() => {
-    syncRef.current?.post({ kind: 'status', status: tx.status, mode: tx.mode });
-  }, [tx.status, tx.mode]);
+    syncRef.current?.post({ kind: 'status', status: tx.status, mode });
+  }, [tx.status, mode]);
 
   useEffect(() => {
-    syncRef.current?.post({ kind: 'partial', partial: tx.partial, mode: tx.mode });
-  }, [tx.partial, tx.mode]);
+    syncRef.current?.post({ kind: 'partial', partial: tx.partial, mode });
+  }, [tx.partial, mode]);
 
   useEffect(() => {
     const newest = tx.history[0];
@@ -140,19 +195,35 @@ function ControlPanel() {
   }, [tx.history, autoVoice]);
 
   useEffect(() => {
-    const lang = langForTranslation(tx.mode);
+    const lang = langForTranslation(mode, undefined, targetLang);
     setVoiceLang(lang);
     refreshVoiceList(lang);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tx.mode]);
+  }, [mode, targetLang]);
+
+  // Mantener UI alineada si el servidor reporta otro modo
+  useEffect(() => {
+    if (tx.mode === 'en-es') {
+      setSourceLang('en');
+      setTargetLang('es');
+    } else if (tx.mode === 'es-en') {
+      setSourceLang('es');
+      setTargetLang('en');
+    } else if (tx.mode === 'auto') {
+      setSourceLang('auto');
+      if (tx.targetLang === 'en' || tx.targetLang === 'es') {
+        setTargetLang(tx.targetLang);
+      }
+    }
+  }, [tx.mode, tx.targetLang]);
 
   const deviceLabel = useMemo(() => {
-    if (mic.permission === 'denied') return 'Microfono denegado por el navegador';
+    if (mic.permission === 'denied') return 'Micrófono denegado por el navegador';
     if (mic.permission !== 'granted' || !mic.devices.length) {
-      return 'AUTORIZAR ACCESO AL MICROFONO';
+      return 'AUTORIZAR ACCESO AL MICRÓFONO';
     }
     const d = mic.devices.find((x) => x.deviceId === mic.deviceId);
-    return d?.label || 'Microfono predeterminado';
+    return d?.label || 'Micrófono predeterminado';
   }, [mic]);
 
   const openProjection = () => {
@@ -161,7 +232,7 @@ function ControlPanel() {
   };
 
   const speakItem = (item: HistoryItem) => {
-    const lang = langForTranslation(item.mode, item.detectedLang);
+    const lang = langForTranslation(item.mode, item.detectedLang, targetLang);
     setVoiceLang(lang);
     setSpeakingId(item.id);
     syncRef.current?.post({ kind: 'speak', text: item.translation, lang, id: item.id });
@@ -177,7 +248,7 @@ function ControlPanel() {
   const speakLive = () => {
     const text = tx.partial.translation || tx.history[0]?.translation || '';
     if (!text) return;
-    const lang = langForTranslation(tx.mode, tx.history[0]?.detectedLang);
+    const lang = langForTranslation(mode, tx.history[0]?.detectedLang, targetLang);
     setSpeakingId('live');
     syncRef.current?.post({ kind: 'speak', text, lang, id: 'live' });
     speakText(
@@ -194,11 +265,11 @@ function ControlPanel() {
     if (mic.permission !== 'granted') {
       const ok = await mic.authorize();
       if (!ok) {
-        tx.setError('Debes autorizar el microfono para iniciar la traduccion.');
+        tx.setError('Debes autorizar el micrófono para iniciar la traducción.');
         return;
       }
     }
-    tx.startSession(tx.mode);
+    tx.startSession(mode, targetLang);
     try {
       await mic.start((b64) => tx.sendAudio(b64));
     } catch (e) {
@@ -228,7 +299,7 @@ function ControlPanel() {
       id: `demo-${Date.now()}`,
       original: DEMO_PHRASE.original,
       translation: DEMO_PHRASE.translation,
-      mode: tx.mode,
+      mode,
       detectedLang: 'en',
       ts: new Date().toISOString(),
     };
@@ -247,6 +318,11 @@ function ControlPanel() {
   };
 
   const listening = tx.status === 'listening' || mic.capturing;
+
+  const pairLabel =
+    sourceLang === 'auto'
+      ? `AUTO → ${targetLang === 'es' ? 'ESPAÑOL' : 'INGLÉS'}`
+      : `${sourceLang === 'es' ? 'ESPAÑOL' : 'INGLÉS'} → ${targetLang === 'es' ? 'ESPAÑOL' : 'INGLÉS'}`;
 
   return (
     <div className="min-h-screen bg-acapomil-bg">
@@ -267,7 +343,7 @@ function ControlPanel() {
             className="inline-flex items-center gap-2 rounded-lg border border-acapomil-blue/60 px-3 py-2 text-sm text-sky-300 hover:bg-acapomil-blue/10"
           >
             <Monitor className="h-4 w-4" />
-            MODO PROYECCION
+            MODO PROYECCIÓN
           </button>
         </header>
 
@@ -284,146 +360,13 @@ function ControlPanel() {
           </div>
         ) : null}
 
-        <section className="rounded-2xl border border-acapomil-border bg-acapomil-card p-5 md:p-6 space-y-4">
-          <div>
-            <p className="mb-2 text-xs font-semibold tracking-wider text-acapomil-muted">
-              DISPOSITIVO DE AUDIO / MICROFONO
-            </p>
-            <div className="flex items-center gap-2">
-              <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-acapomil-blue/20 text-sky-300">
-                <Mic className="h-5 w-5" />
-              </div>
-              {mic.permission === 'granted' && mic.devices.length ? (
-                <select
-                  className="flex-1 rounded-lg border border-acapomil-border bg-[#0d1118] px-3 py-2.5 text-sm"
-                  value={mic.deviceId}
-                  onChange={(e) => mic.setDeviceId(e.target.value)}
-                  disabled={listening}
-                >
-                  {mic.devices.map((d) => (
-                    <option key={d.deviceId} value={d.deviceId}>
-                      {d.label || `Microfono ${d.deviceId.slice(0, 6)}`}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => mic.authorize()}
-                  className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg border border-acapomil-border bg-[#0d1118] px-3 py-2.5 text-sm hover:bg-white/5"
-                >
-                  <Shield className="h-4 w-4 text-sky-300" />
-                  {deviceLabel}
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => mic.refreshDevices()}
-                className="rounded-lg border border-acapomil-border p-2.5 hover:bg-white/5"
-                title="Actualizar dispositivos"
-              >
-                <RefreshCw className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-3 gap-2 rounded-xl bg-[#0d1118] p-1">
-            {(
-              [
-                ['en-es', 'INGLES → ESPANOL'],
-                ['es-en', 'ESPANOL → INGLES'],
-                ['auto', '⇄ AUTO'],
-              ] as [TranslateMode, string][]
-            ).map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                disabled={listening}
-                onClick={() => tx.setMode(value)}
-                className={`rounded-lg px-2 py-2.5 text-xs md:text-sm font-semibold transition ${
-                  tx.mode === value
-                    ? 'bg-acapomil-blue text-white shadow'
-                    : 'text-acapomil-muted hover:text-white'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {!listening ? (
-              <button
-                type="button"
-                onClick={onStart}
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-acapomil-blue hover:bg-acapomil-blue-hover px-4 py-3 font-semibold"
-              >
-                <Play className="h-5 w-5" />
-                INICIAR TRADUCCION
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={onStop}
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-red-600 hover:bg-red-500 px-4 py-3 font-semibold"
-              >
-                <Square className="h-5 w-5" />
-                DETENER
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={openProjection}
-              className="inline-flex items-center justify-center gap-2 rounded-xl border border-acapomil-border bg-white/5 px-4 py-3 font-semibold hover:bg-white/10"
-            >
-              <Monitor className="h-5 w-5" />
-              MODO PROYECCION
-            </button>
-          </div>
-          {tx.model ? (
-            <p className="text-xs text-acapomil-muted">Modelo Live: {tx.model}</p>
-          ) : null}
-        </section>
-
-        <section className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 rounded-xl border border-acapomil-border bg-acapomil-card px-4 py-3">
-          <button
-            type="button"
-            onClick={() => setAutoVoice((v) => !v)}
-            className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium shrink-0 ${
-              autoVoice
-                ? 'border-acapomil-green/50 text-acapomil-green'
-                : 'border-white/10 text-acapomil-muted'
-            }`}
-          >
-            <Volume2 className="h-4 w-4" />
-            VOZ AUTOMATICA: {autoVoice ? 'ACTIVADA' : 'DESACTIVADA'}
-          </button>
-          <label className="flex flex-col sm:flex-row sm:items-center gap-2 text-sm text-acapomil-muted min-w-0 flex-1">
-            <span className="shrink-0">Voz TTS:</span>
-            <select
-              className="w-full min-w-0 rounded-lg border border-acapomil-border bg-[#0d1118] px-2 py-1.5 text-white text-sm"
-              value={voiceURI}
-              onChange={(e) => onVoiceSelect(e.target.value)}
-            >
-              {voiceOptions.length === 0 ? (
-                <option value="">Cargando voces del sistema…</option>
-              ) : (
-                voiceOptions.map((v) => (
-                  <option key={v.voiceURI} value={v.voiceURI}>
-                    {formatVoiceOption(v)}
-                  </option>
-                ))
-              )}
-            </select>
-          </label>
-        </section>
-
+        {/* 1) SUBTÍTULOS EN TIEMPO REAL — arriba */}
         <section className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <StatusPill status={tx.status} />
               <h2 className="text-sm font-semibold tracking-wider text-acapomil-muted">
-                SUBTITULOS EN TIEMPO REAL
+                SUBTÍTULOS EN TIEMPO REAL
               </h2>
             </div>
             <div className="flex items-center gap-2">
@@ -465,21 +408,21 @@ function ControlPanel() {
               }`}
             >
               <div className="mb-3 flex items-center justify-between text-xs text-sky-300">
-                <span className="font-semibold">EN VIVO</span>
+                <span className="font-semibold">EN VIVO · {pairLabel}</span>
                 <button
                   type="button"
                   onClick={speakLive}
                   className="inline-flex items-center gap-1 rounded-md border border-white/10 px-2 py-1 text-gray-200 hover:bg-white/5"
                 >
                   <Volume2 className="h-3.5 w-3.5" />
-                  Escuchar subtitulo
+                  Escuchar subtítulo
                 </button>
               </div>
               <p className="text-sm text-gray-400 mb-1">Original</p>
               <p className="text-base md:text-lg text-gray-200 mb-4 whitespace-pre-wrap break-words leading-relaxed">
                 {tx.partial.original || '…'}
               </p>
-              <p className="text-sm text-acapomil-green mb-1">Traduccion</p>
+              <p className="text-sm text-acapomil-green mb-1">Traducción</p>
               <p className="text-xl md:text-2xl lg:text-3xl font-medium whitespace-pre-wrap break-words leading-relaxed">
                 {tx.partial.translation || '…'}
               </p>
@@ -488,7 +431,7 @@ function ControlPanel() {
 
           {allHistory.length === 0 && !tx.partial.original && !tx.partial.translation ? (
             <div className="rounded-xl border border-dashed border-acapomil-border px-4 py-10 text-center text-acapomil-muted text-sm">
-              Los subtitulos originales y traducidos apareceran aqui al hablar.
+              Los subtítulos originales y traducidos aparecerán aquí al hablar.
             </div>
           ) : null}
 
@@ -504,8 +447,182 @@ function ControlPanel() {
           </div>
         </section>
 
+        {/* 2) Idiomas + voz + acciones */}
+        <section className="rounded-2xl border border-acapomil-border bg-acapomil-card p-5 md:p-6 space-y-4">
+          <div>
+            <p className="mb-2 text-xs font-semibold tracking-wider text-acapomil-muted">
+              IDIOMAS (SOLO ESPAÑOL ↔ INGLÉS)
+            </p>
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
+              <label className="flex-1 min-w-0">
+                <span className="sr-only">Idioma de origen</span>
+                <select
+                  className="w-full rounded-xl border border-acapomil-border bg-[#0d1118] px-3 py-3 text-sm font-medium"
+                  value={sourceLang}
+                  disabled={listening}
+                  onChange={(e) => onSourceChange(e.target.value as SourceLang)}
+                >
+                  {SOURCE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <button
+                type="button"
+                disabled={listening}
+                onClick={onSwapLanguages}
+                className="inline-flex items-center justify-center self-center rounded-full border border-acapomil-border bg-[#0d1118] p-2.5 text-sky-300 hover:bg-white/5 disabled:opacity-50"
+                title="Intercambiar idiomas"
+                aria-label="Intercambiar idiomas"
+              >
+                <ArrowLeftRight className="h-5 w-5" />
+              </button>
+
+              <label className="flex-1 min-w-0">
+                <span className="sr-only">Idioma de destino</span>
+                <select
+                  className="w-full rounded-xl border border-acapomil-border bg-[#0d1118] px-3 py-3 text-sm font-medium"
+                  value={targetLang}
+                  disabled={listening}
+                  onChange={(e) => onTargetChange(e.target.value as TargetLang)}
+                >
+                  {TARGET_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <p className="mt-2 text-xs text-acapomil-muted">
+              Modo enviado al servidor: <span className="text-sky-300 font-semibold">{mode}</span>
+              {mode === 'auto' ? (
+                <>
+                  {' '}
+                  · sesgo destino:{' '}
+                  <span className="text-sky-300 font-semibold">
+                    {targetLang === 'es' ? 'español' : 'inglés'}
+                  </span>
+                </>
+              ) : null}
+            </p>
+          </div>
+
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 rounded-xl border border-acapomil-border bg-[#0d1118] px-3 py-3">
+            <button
+              type="button"
+              onClick={() => setAutoVoice((v) => !v)}
+              className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium shrink-0 ${
+                autoVoice
+                  ? 'border-acapomil-green/50 text-acapomil-green'
+                  : 'border-white/10 text-acapomil-muted'
+              }`}
+            >
+              <Volume2 className="h-4 w-4" />
+              VOZ AUTOMÁTICA: {autoVoice ? 'ACTIVADA' : 'DESACTIVADA'}
+            </button>
+            <label className="flex flex-col sm:flex-row sm:items-center gap-2 text-sm text-acapomil-muted min-w-0 flex-1">
+              <span className="shrink-0">Voz TTS:</span>
+              <select
+                className="w-full min-w-0 rounded-lg border border-acapomil-border bg-acapomil-card px-2 py-1.5 text-white text-sm"
+                value={voiceURI}
+                onChange={(e) => onVoiceSelect(e.target.value)}
+              >
+                {voiceOptions.length === 0 ? (
+                  <option value="">Cargando voces del sistema…</option>
+                ) : (
+                  voiceOptions.map((v) => (
+                    <option key={v.voiceURI} value={v.voiceURI}>
+                      {formatVoiceOption(v)}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {!listening ? (
+              <button
+                type="button"
+                onClick={onStart}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-acapomil-blue hover:bg-acapomil-blue-hover px-4 py-3 font-semibold"
+              >
+                <Play className="h-5 w-5" />
+                INICIAR TRADUCCIÓN
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onStop}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-red-600 hover:bg-red-500 px-4 py-3 font-semibold"
+              >
+                <Square className="h-5 w-5" />
+                DETENER
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={openProjection}
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-acapomil-border bg-white/5 px-4 py-3 font-semibold hover:bg-white/10"
+            >
+              <Monitor className="h-5 w-5" />
+              MODO PROYECCIÓN
+            </button>
+          </div>
+          {tx.model ? (
+            <p className="text-xs text-acapomil-muted">Modelo Live: {tx.model}</p>
+          ) : null}
+        </section>
+
+        {/* 3) Micrófono / dispositivo — abajo */}
+        <section className="rounded-2xl border border-acapomil-border bg-acapomil-card p-5 md:p-6">
+          <p className="mb-2 text-xs font-semibold tracking-wider text-acapomil-muted">
+            DISPOSITIVO DE AUDIO / MICRÓFONO
+          </p>
+          <div className="flex items-center gap-2">
+            <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-acapomil-blue/20 text-sky-300">
+              <Mic className="h-5 w-5" />
+            </div>
+            {mic.permission === 'granted' && mic.devices.length ? (
+              <select
+                className="flex-1 rounded-lg border border-acapomil-border bg-[#0d1118] px-3 py-2.5 text-sm"
+                value={mic.deviceId}
+                onChange={(e) => mic.setDeviceId(e.target.value)}
+                disabled={listening}
+              >
+                {mic.devices.map((d) => (
+                  <option key={d.deviceId} value={d.deviceId}>
+                    {d.label || `Micrófono ${d.deviceId.slice(0, 6)}`}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <button
+                type="button"
+                onClick={() => mic.authorize()}
+                className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg border border-acapomil-border bg-[#0d1118] px-3 py-2.5 text-sm hover:bg-white/5"
+              >
+                <Shield className="h-4 w-4 text-sky-300" />
+                {deviceLabel}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => mic.refreshDevices()}
+              className="rounded-lg border border-acapomil-border p-2.5 hover:bg-white/5"
+              title="Actualizar dispositivos"
+            >
+              <RefreshCw className="h-4 w-4" />
+            </button>
+          </div>
+        </section>
+
         <footer className="pt-4 pb-8 text-center text-xs text-acapomil-muted">
-          Mic PCM 16 kHz → Gemini Live → WebSocket → UI · TTS opcional con speechSynthesis
+          Mic PCM 16 kHz → Gemini Live → WebSocket → UI · TTS opcional con speechSynthesis · Solo EN ↔ ES
         </footer>
       </div>
     </div>

@@ -46,6 +46,7 @@ function send(ws, payload) {
 wss.on('connection', (ws) => {
   let live = null;
   let mode = 'en-es';
+  let targetLang = 'es';
   let originalBuf = '';
   let translationBuf = '';
   let turnId = 0;
@@ -100,13 +101,15 @@ wss.on('connection', (ws) => {
           live = null;
         }
         mode = normalizeMode(msg.mode);
+        targetLang = normalizeTargetLang(msg.targetLang, mode);
         originalBuf = '';
         translationBuf = '';
-        send(ws, { type: 'status', status: 'connecting', mode });
+        send(ws, { type: 'status', status: 'connecting', mode, targetLang });
 
         live = await openLiveSession({
           apiKey,
           mode,
+          targetLang,
           onEvent: (ev) => {
             if (ev.type === 'status') {
               send(ws, ev);
@@ -159,6 +162,7 @@ wss.on('connection', (ws) => {
           type: 'status',
           status: 'listening',
           mode,
+          targetLang,
           model: live.model,
         });
         return;
@@ -191,14 +195,16 @@ wss.on('connection', (ws) => {
 
       if (msg.type === 'set_mode') {
         mode = normalizeMode(msg.mode);
-        send(ws, { type: 'status', status: 'mode', mode });
+        targetLang = normalizeTargetLang(msg.targetLang, mode);
+        send(ws, { type: 'status', status: 'mode', mode, targetLang });
         // Cambio de modo con sesion activa: el cliente debe detener e iniciar de nuevo.
         if (live) {
           send(ws, {
             type: 'status',
             status: 'mode',
             mode,
-            message: 'Modo actualizado. Deten e inicia de nuevo para aplicar el cambio en Gemini Live.',
+            targetLang,
+            message: 'Modo actualizado. Detén e inicia de nuevo para aplicar el cambio en Gemini Live.',
           });
         }
       }
@@ -223,6 +229,12 @@ function normalizeMode(mode) {
   if (mode === 'es-en' || mode === 'es→en' || mode === 'ES_EN') return 'es-en';
   if (mode === 'auto' || mode === 'AUTO') return 'auto';
   return 'en-es';
+}
+
+function normalizeTargetLang(targetLang, mode) {
+  if (targetLang === 'en' || targetLang === 'es') return targetLang;
+  if (mode === 'es-en') return 'en';
+  return 'es';
 }
 
 function guessLang(text, mode) {

@@ -12,30 +12,57 @@ const FLASH_MODELS = [
   'gemini-2.0-flash-live-001',
 ];
 
-function targetLangForMode(mode) {
+/** Normalize optional target bias for auto mode: 'es' | 'en' */
+function normalizeTargetLang(targetLang, mode) {
+  if (targetLang === 'en' || targetLang === 'es') return targetLang;
   if (mode === 'es-en') return 'en';
   return 'es'; // en-es and auto default to Spanish audience
 }
 
-function systemInstructionForMode(mode) {
-  const common = `Eres un interprete simultaneo EN/ES para presentaciones en vivo.
+function targetLangForMode(mode, targetLang) {
+  return normalizeTargetLang(targetLang, mode);
+}
+
+function systemInstructionForMode(mode, targetLang) {
+  const bias = normalizeTargetLang(targetLang, mode);
+  const biasLabel = bias === 'en' ? 'ingles' : 'espanol';
+
+  const common = `Eres un interprete simultaneo SOLO entre ingles y espanol para presentaciones en vivo (ACAPOMIL).
+
+Idiomas permitidos: unicamente ingles (EN) y espanol (ES). No traduzcas hacia ni desde japones, frances, portugues u otros idiomas.
+
 Reglas estrictas:
 - Solo interpreta. No converses, no saludes, no hagas preguntas.
 - Responde unicamente con la traduccion hablada del discurso del usuario.
-- Mantén el significado, el tono formal institucional y la brevedad.`;
+- Mantén el significado, el tono formal institucional y la brevedad.
+- Only English and Spanish. Detect which of the two is spoken and translate to the other (or to the selected target).
+- Si el habla no es ingles ni espanol, intenta mapearlo a EN/ES solo si el sentido es claro; si no, permanece en silencio (no inventes traducciones a otros idiomas).`;
+
   if (mode === 'en-es') {
-    return `${common}\nModo: INGLES a ESPANOL. Traduce solo ingles a espanol. Si oyes espanol, permanece en silencio.`;
+    return `${common}
+
+Modo: INGLES → ESPANOL.
+Traduce solo ingles a espanol. Si oyes espanol, permanece en silencio. Ignora cualquier otro idioma.`;
   }
   if (mode === 'es-en') {
-    return `${common}\nModo: ESPANOL a INGLES. Traduce solo espanol a ingles. Si oyes ingles, permanece en silencio.`;
+    return `${common}
+
+Modo: ESPANOL → INGLES.
+Traduce solo espanol a ingles. Si oyes ingles, permanece en silencio. Ignora cualquier otro idioma.`;
   }
-  return `${common}\nModo: AUTO. Detecta el idioma (ingles o espanol) y traduce al otro idioma.`;
+  return `${common}
+
+Modo: AUTO (deteccion EN/ES) con sesgo de salida hacia ${biasLabel}.
+Detecta cual de los dos idiomas (ingles o espanol) se habla y traduce al otro.
+Preferencia de idioma de salida cuando haya ambiguedad: ${biasLabel}.
+Nunca produzcas salida en un idioma que no sea ingles o espanol.`;
 }
 
 /**
  * Abre una sesion Gemini Live y reenvia audio PCM + textos al cliente via callbacks.
+ * @param {{ apiKey: string, mode: string, targetLang?: string, onEvent: Function, onError: Function, onClose: Function }} opts
  */
-export async function openLiveSession({ apiKey, mode, onEvent, onError, onClose }) {
+export async function openLiveSession({ apiKey, mode, targetLang, onEvent, onError, onClose }) {
   const ai = new GoogleGenAI({ apiKey });
   const useTranslate = mode === 'en-es' || mode === 'es-en';
   const models = useTranslate ? TRANSLATE_MODELS : FLASH_MODELS;
@@ -43,13 +70,13 @@ export async function openLiveSession({ apiKey, mode, onEvent, onError, onClose 
 
   for (const model of models) {
     try {
-      const config = buildConfig(mode, model);
+      const config = buildConfig(mode, model, targetLang);
       const session = await ai.live.connect({
         model,
         config,
         callbacks: {
           onopen: () => {
-            onEvent({ type: 'status', status: 'connected', model, mode });
+            onEvent({ type: 'status', status: 'connected', model, mode, targetLang: normalizeTargetLang(targetLang, mode) });
           },
           onmessage: (message) => handleMessage(message, onEvent),
           onerror: (e) => {
@@ -93,8 +120,9 @@ export async function openLiveSession({ apiKey, mode, onEvent, onError, onClose 
   throw lastError || new Error('No se pudo conectar a Gemini Live con ningun modelo conocido');
 }
 
-function buildConfig(mode, model) {
+function buildConfig(mode, model, targetLang) {
   const isTranslateModel = model.includes('translate');
+  const target = targetLangForMode(mode, targetLang);
 
   if (isTranslateModel) {
     return {
@@ -102,8 +130,17 @@ function buildConfig(mode, model) {
       inputAudioTranscription: {},
       outputAudioTranscription: {},
       translationConfig: {
-        targetLanguageCode: targetLangForMode(mode),
+        targetLanguageCode: target,
+        // En auto, permitir eco del idioma objetivo segun sesgo EN/ES
         echoTargetLanguage: mode === 'auto',
+      },
+      // Refuerzo textual: solo EN↔ES (algunos modelos translate lo respetan como contexto)
+      systemInstruction: {
+        parts: [
+          {
+            text: `Only English and Spanish. Detect which of the two is spoken and translate to the other (or to the selected target ${target}). Do not translate to or from any other language.`,
+          },
+        ],
       },
     };
   }
@@ -114,7 +151,7 @@ function buildConfig(mode, model) {
     inputAudioTranscription: {},
     outputAudioTranscription: {},
     systemInstruction: {
-      parts: [{ text: systemInstructionForMode(mode) }],
+      parts: [{ text: systemInstructionForMode(mode, targetLang) }],
     },
   };
 }

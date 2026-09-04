@@ -293,7 +293,13 @@ export function stopSpeaking() {
   if (s) s.cancel();
 }
 
-export function langForTranslation(mode: string, detected?: string): string {
+export function langForTranslation(
+  mode: string,
+  detected?: string,
+  targetLang?: string
+): string {
+  if (targetLang === 'en') return 'en-US';
+  if (targetLang === 'es') return 'es-CL';
   if (mode === 'en-es') return 'es-CL';
   if (mode === 'es-en') return 'en-US';
   if (detected === 'en') return 'es-CL';
