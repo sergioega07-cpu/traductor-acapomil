@@ -1,19 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AppStatus, HistoryItem, PartialSubtitles, ServerMessage, TargetLang, TranslateMode } from '../lib/types';
 import { isValidTranslationText } from '../lib/tts';
+import { wsUrl } from '../lib/wsUrl';
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_BASE_MS = 400;
 const MAX_AUDIO_BUFFER = 80; // ~8s of 100ms chunks
 
-function wsUrl() {
-  // En desarrollo conectamos directo al backend (evita fallos del proxy WS de Vite)
-  if (import.meta.env.DEV) {
-    return 'ws://127.0.0.1:3001/ws';
-  }
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${window.location.host}/ws`;
-}
+
 
 export function useTranslatorSocket() {
   const wsRef = useRef<WebSocket | null>(null);
@@ -158,6 +152,11 @@ export function useTranslatorSocket() {
       failCount.current = 0;
       setError(null);
       setStatus('ready');
+      try {
+        ws.send(JSON.stringify({ type: 'hello', role: 'control' }));
+      } catch {
+        /* ignore */
+      }
     };
     ws.onclose = () => {
       if (wsRef.current === ws) wsRef.current = null;

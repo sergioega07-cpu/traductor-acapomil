@@ -2,15 +2,14 @@
 
 Traduccion de voz **EN ↔ ES** en tiempo real para presentaciones y Smart TV.
 
-Arquitectura: **microfono PCM → Gemini Live (streaming) → WebSocket → UI**.
+Arquitectura: **microfono PCM → Gemini Live (streaming) → WebSocket → UI + proyeccion LAN**.
 
 - Subtitulos visibles (original + traduccion)
-- Modo proyeccion (pantalla completa / TV)
-- "Escuchar subtitulo" con TTS del navegador (`speechSynthesis`)
-- Selector de microfono, historial de sesion, copiar / limpiar
-- Modos: Ingles→Espanol, Espanol→Ingles, AUTO (deteccion de idioma)
+- Modo proyeccion inalambrica (Samsung TV / navegador en la misma WiFi)
+- Selector de microfono
+- Modos: Ingles→Espanol, Espanol→Ingles, AUTO (conversacion EN ↔ ES)
 
-La clave `GEMINI_API_KEY` vive **solo en el servidor** (archivo `.env`). Nunca se expone al cliente.
+La clave `GEMINI_API_KEY` vive **solo en el servidor** (archivo `.env`). Nunca se expone al cliente. Uso pensado para **red local (LAN)** unicamente.
 
 ## Requisitos
 
@@ -23,6 +22,7 @@ La clave `GEMINI_API_KEY` vive **solo en el servidor** (archivo `.env`). Nunca s
 ```bash
 git clone https://github.com/sergioega07-cpu/traductor-acapomil.git
 cd traductor-acapomil
+git pull
 cp .env.example .env
 # Edita .env y pega tu GEMINI_API_KEY=
 
@@ -41,10 +41,12 @@ npm run dev
 
 Esto levanta:
 
-- **Servidor** Express + WebSocket en `http://localhost:3001` (ruta `/ws`)
-- **Cliente** Vite en `http://localhost:5173` (proxy de `/api` y `/ws` al servidor)
+- **Servidor** Express + WebSocket en `0.0.0.0:3001` (ruta `/ws`) — accesible en LAN
+- **Cliente** Vite en `0.0.0.0:5173` (proxy de `/api` y `/ws` al servidor)
 
-Abre `http://localhost:5173`.
+Abre el panel de control en el Mac: `http://localhost:5173`.
+
+> El backend escucha en `0.0.0.0` y Vite usa `server.host: true` para que la TV abra la app por IP de LAN.
 
 Tambien puedes correr por separado:
 
@@ -53,6 +55,29 @@ npm run dev:server
 npm run dev:client
 ```
 
+## Proyeccion inalambrica (Samsung TV - sin HDMI)
+
+Como el calendario de oficina: abres una URL en el navegador del televisor.
+
+1. Mac y TV en la **misma WiFi**.
+2. En el Mac: git pull (si hace falta) y arranca el entorno de desarrollo.
+3. Abre el panel de control en el Mac (puerto 5173 en desarrollo).
+4. Copia la **URL de proyeccion** con el boton **Copiar URL TV**.
+5. En el Samsung TV: abre el **navegador** y pega esa URL (mode=projection).
+6. En la proyeccion, pulsa **pantalla completa** (boton en la cabecera) si el TV no tiene F11.
+7. En el Mac: autoriza el microfono y pulsa **Iniciar traduccion**.
+
+Los subtitulos llegan por **WebSocket** (relay en el servidor). La pagina de proyeccion envia hello con role projection y recibe los mismos partial / final / status que el control. No hace falta HDMI ni BroadcastChannel entre dispositivos.
+
+**Seguridad:** solo LAN; la clave Gemini permanece en el servidor.
+
+### Si la TV no carga
+
+- Comprueba que Mac y TV estan en la misma red (no WiFi de invitados aislada).
+- En la consola del servidor deberias ver la IP LAN.
+- El endpoint de LAN lista las IPs usadas para armar la URL.
+- Permite Node en los puertos 5173 y 3001 en el firewall del Mac.
+
 ## Produccion (opcional)
 
 ```bash
@@ -60,42 +85,35 @@ npm run build
 npm start
 ```
 
-El servidor sirve el build de `client/dist` y el WebSocket en el mismo puerto (`PORT`, por defecto 3001).
+El servidor sirve el build de `client/dist` y el WebSocket en el mismo puerto (`PORT`, por defecto 3001, en `0.0.0.0`). En produccion la URL TV suele ser el mismo host con mode=projection.
 
-## Como usar
+## Como usar (panel Mac)
 
 1. Autoriza el microfono (boton o selector de dispositivo).
 2. Elige el modo de idioma (EN→ES, ES→EN o AUTO).
 3. Pulsa **Iniciar traduccion** y habla.
-4. Veras subtitulos en vivo (original + traduccion) y el historial por turnos.
-5. Pulsa **Escuchar** en una tarjeta o **Escuchar subtitulo** para TTS local.
-6. **Modo proyeccion**: abre una ventana grande (ideal para TV / proyector). Se sincroniza con la ventana de control mediante `BroadcastChannel`.
-
-### Modo proyeccion
-
-- Boton **MODO PROYECCION** en la UI de control, o abre `/?mode=projection`.
-- Muestra la traduccion en tipografia grande, apta para fullscreen (F11).
-- Incluye control **Escuchar subtitulo** para el presentador.
+4. Veras subtitulos en vivo (original + traduccion).
+5. **Modo proyeccion**: ventana local o URL en la TV (ver seccion inalambrica arriba).
 
 ## Arquitectura tecnica
 
 ```
-Navegador                     Servidor Node                    Google
----------                     -------------                    ------
+Mac (control + mic)              Servidor Node                 Google
+------------------              -------------                 ------
 getUserMedia
 AudioWorklet → PCM 16kHz
 base64/JSON  ──WebSocket──►  @google/genai live.connect
                              sendRealtimeInput(audio)
-                             ◄── inputTranscription (original)
-                             ◄── outputTranscription (traduccion)
+                             ◄── inputTranscription
+                             ◄── outputTranscription
             ◄── partial/final ──
-UI + BroadcastChannel
-speechSynthesis (TTS opcional)
+                             ── fan-out ──►  TV (role: projection)
+UI control                                   ProjectionView
 ```
 
+- La proyeccion **prefiere WebSocket**; BroadcastChannel queda como respaldo solo en el mismo navegador/dispositivo.
 - **No** se usa la Web Speech API del navegador como STT principal.
-- Un solo camino de streaming Live (sin duplicar REST + Live por el mismo turno).
-- TTS opcional: `window.speechSynthesis` en el cliente. El audio nativo de Gemini se ignora a proposito para subtitulos + control local de voz.
+- Un solo camino de streaming Live.
 
 ### Modelos Live
 
@@ -111,24 +129,30 @@ Si un nombre de modelo no esta disponible en tu proyecto/region, el servidor pru
 
 Cliente → servidor:
 
-- `{ "type": "start", "mode": "en-es"|"es-en"|"auto" }`
+- `{ "type": "hello", "role": "control"|"projection" }`
+- `{ "type": "start", "mode": "en-es"|"es-en"|"auto", "targetLang"? }`
 - `{ "type": "audio", "data": "<base64 PCM 16-bit LE mono 16kHz>" }`
 - `{ "type": "audio_end" }` / `{ "type": "stop" }`
 - `{ "type": "set_mode", "mode" }`
+- `{ "type": "project", "payload": { ... } }` — sync UI opcional hacia proyeccion
 
-Servidor → cliente:
+Servidor → cliente (control y todos los projection):
 
 - `{ "type": "status", "status", "model?", "hasApiKey?" }`
 - `{ "type": "partial", "original", "translation" }`
 - `{ "type": "final", "id", "original", "translation", "mode", "ts" }`
+- `{ "type": "clear" }` (al detener)
 - `{ "type": "error", "message" }`
+
+API auxiliar:
+
+- `GET /api/lan` → `{ ips, port, clientPort }` para armar la URL TV
 
 ## Limitaciones conocidas (Gemini Live)
 
 - Sesiones de audio limitadas en el tiempo (~15 min sin compresion de contexto); para actos largos, detener e iniciar de nuevo.
 - La calidad de la deteccion AUTO depende del modelo; en actos formales conviene fijar EN→ES o ES→EN.
 - Latencia de unos segundos (tipico de traduccion simultanea streaming).
-- El TTS del navegador depende de las voces instaladas en el SO.
 - Hace falta `GEMINI_API_KEY` valida con acceso a la API Live / modelos preview.
 - Usa auriculares al probar para evitar eco / autointerrupcion.
 

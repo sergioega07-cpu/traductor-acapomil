@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeftRight,
+  Copy,
   Mic,
   Monitor,
   Play,
@@ -18,6 +19,7 @@ import { useSubtitleDisplay } from './lib/subtitleDisplay';
 import type { SourceLang, TargetLang } from './lib/types';
 import { deriveMode } from './lib/types';
 import { isValidTranslationText, stopSpeaking } from './lib/tts';
+import { resolveProjectionUrl } from './lib/projectionUrl';
 
 function isProjectionRoute() {
   const q = new URLSearchParams(window.location.search);
@@ -46,6 +48,8 @@ function ControlPanel() {
   const [sourceLang, setSourceLang] = useState<SourceLang>('auto');
   const [targetLang, setTargetLang] = useState<TargetLang>('es');
   const syncRef = useRef<ReturnType<typeof createSyncChannel> | null>(null);
+  const [projectionUrl, setProjectionUrl] = useState('');
+  const [copiedTv, setCopiedTv] = useState(false);
 
   const mode = useMemo(() => deriveMode(sourceLang, targetLang), [sourceLang, targetLang]);
 
@@ -100,6 +104,16 @@ function ControlPanel() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    void resolveProjectionUrl().then((url) => {
+      if (!cancelled) setProjectionUrl(url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     syncRef.current?.post({ kind: 'status', status: tx.status, mode });
   }, [tx.status, mode]);
 
@@ -138,8 +152,21 @@ function ControlPanel() {
   }, [mic]);
 
   const openProjection = () => {
-    const url = `${window.location.origin}${window.location.pathname}?mode=projection`;
+    const url = projectionUrl || `${window.location.origin}/?mode=projection`;
     window.open(url, 'traductor-acapomil-projection', 'noopener,noreferrer');
+  };
+
+  const copyTvUrl = async () => {
+    const url = projectionUrl || (await resolveProjectionUrl());
+    setProjectionUrl(url);
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedTv(true);
+      window.setTimeout(() => setCopiedTv(false), 2000);
+    } catch {
+      // Fallback for older TV remotes / restricted clipboard
+      window.prompt('Copia esta URL para la TV:', url);
+    }
   };
 
   const onStart = async () => {
@@ -385,6 +412,33 @@ function ControlPanel() {
               MODO PROYECCIÓN
             </button>
           </div>
+
+          <div className="rounded-xl border border-acapomil-border bg-[#0d1118] p-3 space-y-2">
+            <p className="text-xs font-semibold tracking-wider text-acapomil-muted">
+              URL DE PROYECCIÓN (TV · MISMA WIFI)
+            </p>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                readOnly
+                value={projectionUrl || 'Detectando IP de red local…'}
+                className="flex-1 min-w-0 rounded-lg border border-acapomil-border bg-black/40 px-3 py-2 text-xs sm:text-sm font-mono text-sky-200"
+                onFocus={(e) => e.target.select()}
+              />
+              <button
+                type="button"
+                onClick={() => void copyTvUrl()}
+                disabled={!projectionUrl}
+                className="inline-flex items-center justify-center gap-2 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-sm font-semibold text-sky-100 hover:bg-sky-500/20 disabled:opacity-50"
+              >
+                <Copy className="h-4 w-4" />
+                {copiedTv ? 'Copiado' : 'Copiar URL TV'}
+              </button>
+            </div>
+            <p className="text-xs text-acapomil-muted">
+              Abre esta URL en el navegador del Samsung TV (misma WiFi). El Mac mantiene controles + micrófono. Sin HDMI.
+            </p>
+          </div>
+
           {tx.model ? (
             <p className="text-xs text-acapomil-muted">Modelo Live: {tx.model}</p>
           ) : null}

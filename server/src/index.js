@@ -1,4 +1,5 @@
 import http from 'http';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import express from 'express';
@@ -13,8 +14,30 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 const PORT = Number(process.env.PORT || 3001);
 const apiKey = process.env.GEMINI_API_KEY || '';
 
+/** IPv4 LAN addresses (non-internal) for TV / wireless projection URLs */
+function getLanIPs() {
+  const ifaces = os.networkInterfaces();
+  const ips = [];
+  for (const name of Object.keys(ifaces)) {
+    for (const iface of ifaces[name] || []) {
+      const family = iface.family;
+      const isV4 = family === 'IPv4' || family === 4;
+      if (isV4 && !iface.internal) {
+        ips.push(iface.address);
+      }
+    }
+  }
+  return ips;
+}
+
 const app = express();
-app.use(cors());
+// LAN / Smart TV browsers may open from http://192.168.x.x — allow any origin on private network
+app.use(
+  cors({
+    origin: true,
+    credentials: false,
+  })
+);
 app.use(express.json());
 
 app.get('/api/health', (_req, res) => {
@@ -22,6 +45,16 @@ app.get('/api/health', (_req, res) => {
     ok: true,
     hasApiKey: Boolean(apiKey),
     service: 'traductor-acapomil',
+  });
+});
+
+/** Returns LAN IPs so the control UI can show a copyable TV projection URL */
+app.get('/api/lan', (_req, res) => {
+  res.json({
+    ips: getLanIPs(),
+    port: PORT,
+    /** Vite dev client port (proxy /ws and /api here in development) */
+    clientPort: 5173,
   });
 });
 
@@ -37,10 +70,26 @@ app.get('*', (req, res, next) => {
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
+/** Clients that subscribed as projection (TV / second screen) */
+const projectionClients = new Set();
+
 function send(ws, payload) {
   if (ws.readyState === ws.OPEN) {
     ws.send(JSON.stringify(payload));
   }
+}
+
+/** Fan-out subtitle / status events to all projection sockets */
+function broadcastToProjection(payload) {
+  for (const client of projectionClients) {
+    send(client, payload);
+  }
+}
+
+/** Send to the control socket and mirror to every projection client */
+function sendControlAndProjection(ws, payload) {
+  send(ws, payload);
+  broadcastToProjection(payload);
 }
 
 wss.on('connection', (ws) => {
@@ -52,31 +101,31 @@ wss.on('connection', (ws) => {
   let turnId = 0;
   let audioChunkCount = 0;
   let lastAudioLogAt = 0;
+  /** @type {'control' | 'projection'} */
+  let role = 'control';
 
   send(ws, {
     type: 'status',
     status: 'ready',
     hasApiKey: Boolean(apiKey),
+    role,
   });
 
   const flushTurn = (force = false) => {
     const original = originalBuf.trim();
     let translation = sanitizeTranslationText(translationBuf);
-    // Never flush a turn whose "translation" is a language code / garbage
     if (translationBuf.trim() && !translation) {
       console.warn('[flush] dropping invalid translation:', JSON.stringify(translationBuf));
       translationBuf = '';
       translation = '';
     }
     if (!original && !translation) return;
-    // Avoid finals that only have garbage/empty translation unless forced with original only
     if (!force && (!original || !translation)) return;
     if (force && original && !translation) {
-      // Keep original for display but do not invent a translation — client won't TTS empty
       console.warn('[flush] turn complete without valid translation; sending original only');
     }
     turnId += 1;
-    send(ws, {
+    sendControlAndProjection(ws, {
       type: 'final',
       id: `t-${Date.now()}-${turnId}`,
       original,
@@ -92,6 +141,7 @@ wss.on('connection', (ws) => {
   ws.on('message', async (raw, isBinary) => {
     try {
       if (isBinary) {
+        if (role === 'projection') return;
         if (live) {
           live.sendAudioBase64(Buffer.from(raw).toString('base64'));
         }
@@ -100,9 +150,41 @@ wss.on('connection', (ws) => {
 
       const msg = JSON.parse(String(raw));
 
+      if (msg.type === 'hello') {
+        const nextRole = msg.role === 'projection' ? 'projection' : 'control';
+        if (role === 'projection') projectionClients.delete(ws);
+        role = nextRole;
+        if (role === 'projection') {
+          projectionClients.add(ws);
+          console.log(`[ws] projection client connected (${projectionClients.size} total)`);
+        }
+        send(ws, {
+          type: 'status',
+          status: 'ready',
+          hasApiKey: Boolean(apiKey),
+          role,
+        });
+        return;
+      }
+
+      // Control can push arbitrary UI sync payloads to projection screens
+      if (msg.type === 'project') {
+        if (role === 'projection') return;
+        const payload = msg.payload != null ? msg.payload : msg;
+        broadcastToProjection(
+          typeof payload === 'object' && payload.type
+            ? payload
+            : { type: 'project', payload }
+        );
+        return;
+      }
+
+      // Projection clients only receive; ignore session/audio commands
+      if (role === 'projection') return;
+
       if (msg.type === 'start') {
         if (!apiKey) {
-          send(ws, {
+          sendControlAndProjection(ws, {
             type: 'error',
             message:
               'Falta GEMINI_API_KEY en el servidor. Copia .env.example a .env y agrega tu clave de Google AI Studio.',
@@ -119,7 +201,7 @@ wss.on('connection', (ws) => {
         translationBuf = '';
         audioChunkCount = 0;
         lastAudioLogAt = 0;
-        send(ws, { type: 'status', status: 'connecting', mode, targetLang });
+        sendControlAndProjection(ws, { type: 'status', status: 'connecting', mode, targetLang });
 
         live = await openLiveSession({
           apiKey,
@@ -127,14 +209,14 @@ wss.on('connection', (ws) => {
           targetLang,
           onEvent: (ev) => {
             if (ev.type === 'status') {
-              send(ws, ev);
+              sendControlAndProjection(ws, ev);
               return;
             }
             if (ev.type === 'interim') {
               if (ev.role === 'translation' && !isValidTranslationText(ev.text)) {
                 return;
               }
-              send(ws, {
+              sendControlAndProjection(ws, {
                 type: 'interim',
                 role: ev.role,
                 text: ev.text,
@@ -144,17 +226,15 @@ wss.on('connection', (ws) => {
             }
             if (ev.type === 'transcript') {
               if (ev.role === 'original') {
-                // Los transcripts de Live suelen ser acumulativos por turno
                 originalBuf = ev.text;
               } else if (ev.role === 'translation') {
                 const clean = sanitizeTranslationText(ev.text);
                 if (!clean) {
-                  // Keep previous valid translationBuf; do not overwrite with "es"
                   return;
                 }
                 translationBuf = clean;
               }
-              send(ws, {
+              sendControlAndProjection(ws, {
                 type: 'partial',
                 original: originalBuf,
                 translation: translationBuf,
@@ -165,23 +245,23 @@ wss.on('connection', (ws) => {
             }
             if (ev.type === 'turn_complete') {
               flushTurn(true);
-              send(ws, { type: 'turn_complete' });
+              sendControlAndProjection(ws, { type: 'turn_complete' });
               return;
             }
             if (ev.type === 'interrupted') {
-              send(ws, { type: 'interrupted' });
+              sendControlAndProjection(ws, { type: 'interrupted' });
             }
           },
           onError: (message) => {
-            send(ws, { type: 'error', message: `Gemini Live: ${message}` });
+            sendControlAndProjection(ws, { type: 'error', message: `Gemini Live: ${message}` });
           },
           onClose: (reason) => {
-            send(ws, { type: 'status', status: 'disconnected', reason });
+            sendControlAndProjection(ws, { type: 'status', status: 'disconnected', reason });
             live = null;
           },
         });
 
-        send(ws, {
+        sendControlAndProjection(ws, {
           type: 'status',
           status: 'listening',
           mode,
@@ -218,17 +298,17 @@ wss.on('connection', (ws) => {
           live.close();
           live = null;
         }
-        send(ws, { type: 'status', status: 'stopped' });
+        sendControlAndProjection(ws, { type: 'status', status: 'stopped' });
+        broadcastToProjection({ type: 'clear' });
         return;
       }
 
       if (msg.type === 'set_mode') {
         mode = normalizeMode(msg.mode);
         targetLang = normalizeTargetLang(msg.targetLang, mode);
-        send(ws, { type: 'status', status: 'mode', mode, targetLang });
-        // Cambio de modo con sesion activa: el cliente debe detener e iniciar de nuevo.
+        sendControlAndProjection(ws, { type: 'status', status: 'mode', mode, targetLang });
         if (live) {
-          send(ws, {
+          sendControlAndProjection(ws, {
             type: 'status',
             status: 'mode',
             mode,
@@ -247,6 +327,10 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
+    if (role === 'projection') {
+      projectionClients.delete(ws);
+      console.log(`[ws] projection client disconnected (${projectionClients.size} left)`);
+    }
     if (live) {
       live.close();
       live = null;
@@ -277,7 +361,12 @@ function guessLang(text, mode) {
   return 'auto';
 }
 
-server.listen(PORT, () => {
-  console.log(`[traductor-acapomil] HTTP+WS en http://localhost:${PORT}`);
+// Bind 0.0.0.0 so LAN devices (Samsung TV browser) can reach the API/WS
+server.listen(PORT, '0.0.0.0', () => {
+  const lans = getLanIPs();
+  console.log(`[traductor-acapomil] HTTP+WS en http://0.0.0.0:${PORT} (localhost + LAN)`);
+  if (lans.length) {
+    console.log(`[traductor-acapomil] LAN: ${lans.map((ip) => `http://${ip}:${PORT}`).join(', ')}`);
+  }
   console.log(`[traductor-acapomil] GEMINI_API_KEY: ${apiKey ? 'configurada' : 'AUSENTE'}`);
 });
