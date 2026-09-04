@@ -3,7 +3,7 @@ export function Crest({ className = 'w-10 h-10' }: { className?: string }) {
     <img
       src="/acapomil-logo.png"
       alt="ACAPOMIL"
-      className={`${className} object-contain`}
+      className={`${className} object-contain rounded-md bg-transparent`}
       draggable={false}
     />
   );

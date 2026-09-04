@@ -347,9 +347,20 @@ function ControlPanel() {
           </button>
         </header>
 
-        {tx.error ? (
-          <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-            {tx.error}
+        {tx.error || tx.status === 'disconnected' ? (
+          <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200 flex flex-wrap items-center justify-between gap-3">
+            <span>
+              {tx.error ||
+                'Desconectado del servidor de traducción. Puedes seguir viendo el historial de subtítulos.'}
+            </span>
+            <button
+              type="button"
+              onClick={() => tx.reconnect()}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-red-400/40 px-3 py-1.5 text-xs font-semibold text-red-100 hover:bg-red-500/20"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              Reconectar
+            </button>
           </div>
         ) : null}
 
@@ -592,6 +603,12 @@ function ControlPanel() {
                 className="flex-1 rounded-lg border border-acapomil-border bg-[#0d1118] px-3 py-2.5 text-sm"
                 value={mic.deviceId}
                 onChange={(e) => mic.setDeviceId(e.target.value)}
+                onFocus={() => {
+                  void mic.refreshDevices();
+                }}
+                onMouseDown={() => {
+                  void mic.refreshDevices();
+                }}
                 disabled={listening}
               >
                 {mic.devices.map((d) => (
@@ -612,7 +629,9 @@ function ControlPanel() {
             )}
             <button
               type="button"
-              onClick={() => mic.refreshDevices()}
+              onClick={() => {
+                void mic.refreshDevices();
+              }}
               className="rounded-lg border border-acapomil-border p-2.5 hover:bg-white/5"
               title="Actualizar dispositivos"
             >

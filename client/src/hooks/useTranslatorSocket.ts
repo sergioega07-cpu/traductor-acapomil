@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AppStatus, HistoryItem, PartialSubtitles, ServerMessage, TargetLang, TranslateMode } from '../lib/types';
 
+const MAX_RECONNECT_ATTEMPTS = 5;
+const RECONNECT_BASE_MS = 400;
+
 function wsUrl() {
   // En desarrollo conectamos directo al backend (evita fallos del proxy WS de Vite)
   if (import.meta.env.DEV) {
@@ -22,6 +25,8 @@ export function useTranslatorSocket() {
   const [targetLang, setTargetLangState] = useState<TargetLang>('es');
   const intentionalClose = useRef(false);
   const reconnectTimer = useRef<number | null>(null);
+  const failCount = useRef(0);
+  const connectRef = useRef<() => void>(() => {});
 
   const clearReconnect = () => {
     if (reconnectTimer.current != null) {
@@ -92,22 +97,39 @@ export function useTranslatorSocket() {
     }
     intentionalClose.current = false;
     clearReconnect();
+
+    // While (re)connecting, show connecting — not a flash of disconnected
+    setStatus('connecting');
+
     const ws = new WebSocket(wsUrl());
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
     ws.onopen = () => {
+      failCount.current = 0;
       setError(null);
       setStatus('ready');
     };
     ws.onclose = () => {
       if (wsRef.current === ws) wsRef.current = null;
+      // Intentional StrictMode / unmount close: do not flash disconnected
       if (intentionalClose.current) return;
-      setStatus('disconnected');
-      // Reintento corto (cubre StrictMode / cierre prematuro)
+
+      failCount.current += 1;
+      if (failCount.current >= MAX_RECONNECT_ATTEMPTS) {
+        setStatus('disconnected');
+        setError(
+          'No se pudo conectar al servidor de traducción. Comprueba que el backend esté en marcha y pulsa Reconectar.'
+        );
+        return;
+      }
+
+      // Keep UI as connecting while retries are in flight
+      setStatus('connecting');
+      const delay = RECONNECT_BASE_MS * Math.min(failCount.current, 4);
       reconnectTimer.current = window.setTimeout(() => {
-        if (!intentionalClose.current) connect();
-      }, 400);
+        if (!intentionalClose.current) connectRef.current();
+      }, delay);
     };
     ws.onerror = () => {
       // No marcar error si estamos cerrando a proposito (React StrictMode)
@@ -123,6 +145,8 @@ export function useTranslatorSocket() {
     };
   }, [handleServer]);
 
+  connectRef.current = connect;
+
   useEffect(() => {
     connect();
     return () => {
@@ -134,6 +158,26 @@ export function useTranslatorSocket() {
         ws.close();
       }
     };
+  }, [connect]);
+
+  const reconnect = useCallback(() => {
+    failCount.current = 0;
+    setError(null);
+    setStatus('connecting');
+    clearReconnect();
+    const existing = wsRef.current;
+    if (existing) {
+      // Avoid onclose scheduling a competing retry while we reconnect manually
+      intentionalClose.current = true;
+      try {
+        existing.close();
+      } catch {
+        /* ignore */
+      }
+      if (wsRef.current === existing) wsRef.current = null;
+    }
+    intentionalClose.current = false;
+    connect();
   }, [connect]);
 
   const sendJson = useCallback((payload: unknown) => {
@@ -212,6 +256,6 @@ export function useTranslatorSocket() {
     sendAudio,
     clearHistory,
     copyAll,
-    reconnect: connect,
+    reconnect,
   };
 }

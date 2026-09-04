@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
@@ -10,27 +10,70 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
+function isLabeledMic(d: MediaDeviceInfo): boolean {
+  return Boolean(d.label && d.label.trim() && d.label !== 'Default');
+}
+
 export function useMicCapture() {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
-  const [deviceId, setDeviceId] = useState<string>('');
+  const [deviceId, setDeviceIdState] = useState<string>('');
   const [permission, setPermission] = useState<'unknown' | 'granted' | 'denied'>('unknown');
   const [capturing, setCapturing] = useState(false);
   const streamRef = useRef<MediaStream | null>(null);
   const ctxRef = useRef<AudioContext | null>(null);
   const workletRef = useRef<AudioWorkletNode | null>(null);
   const onChunkRef = useRef<((b64: string) => void) | null>(null);
+  const deviceIdRef = useRef<string>('');
+
+  const setDeviceId = useCallback((id: string) => {
+    deviceIdRef.current = id;
+    setDeviceIdState(id);
+  }, []);
 
   const refreshDevices = useCallback(async () => {
     try {
+      if (!navigator.mediaDevices?.enumerateDevices) return [];
       const list = await navigator.mediaDevices.enumerateDevices();
       const mics = list.filter((d) => d.kind === 'audioinput');
       setDevices(mics);
-      if (!deviceId && mics[0]?.deviceId) setDeviceId(mics[0].deviceId);
+
+      const current = deviceIdRef.current;
+      const stillPresent = current && mics.some((d) => d.deviceId === current);
+
+      if (stillPresent) {
+        // Prefer keeping previously selected Continuity / iPhone mic if still present
+        return mics;
+      }
+
+      if (current && !stillPresent) {
+        // Device vanished (common with Continuity) — clear or pick first labeled mic
+        const labeled = mics.find(isLabeledMic) || mics[0];
+        setDeviceId(labeled?.deviceId || '');
+        return mics;
+      }
+
+      if (!current && mics[0]?.deviceId) {
+        const labeled = mics.find(isLabeledMic) || mics[0];
+        setDeviceId(labeled.deviceId);
+      }
       return mics;
     } catch {
       return [];
     }
-  }, [deviceId]);
+  }, [setDeviceId]);
+
+  useEffect(() => {
+    void refreshDevices();
+    const md = navigator.mediaDevices;
+    if (!md?.addEventListener) return;
+    const onChange = () => {
+      void refreshDevices();
+    };
+    md.addEventListener('devicechange', onChange);
+    return () => {
+      md.removeEventListener('devicechange', onChange);
+    };
+  }, [refreshDevices]);
 
   const authorize = useCallback(async () => {
     try {
@@ -48,9 +91,11 @@ export function useMicCapture() {
   const start = useCallback(
     async (onChunk: (b64: string) => void) => {
       onChunkRef.current = onChunk;
+      const id = deviceIdRef.current;
+      // Use ideal (not exact) so Continuity / iPhone mics still work when flaky
       const constraints: MediaStreamConstraints = {
         audio: {
-          deviceId: deviceId ? { exact: deviceId } : undefined,
+          deviceId: id ? { ideal: id } : undefined,
           channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
@@ -77,7 +122,7 @@ export function useMicCapture() {
       // No conectar a destination para evitar feedback
       setCapturing(true);
     },
-    [deviceId, refreshDevices]
+    [refreshDevices]
   );
 
   const stop = useCallback(() => {

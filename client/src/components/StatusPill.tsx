@@ -12,7 +12,8 @@ const LABELS: Record<string, string> = {
 
 export function StatusPill({ status }: { status: AppStatus }) {
   const live = status === 'listening';
-  const err = status === 'error';
+  const err = status === 'error' || status === 'disconnected';
+  const connecting = status === 'connecting';
   return (
     <span
       className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold tracking-wide ${
@@ -20,12 +21,20 @@ export function StatusPill({ status }: { status: AppStatus }) {
           ? 'bg-emerald-500/15 text-acapomil-green border border-emerald-500/40'
           : err
             ? 'bg-red-500/15 text-red-400 border border-red-500/40'
-            : 'bg-white/5 text-acapomil-muted border border-white/10'
+            : connecting
+              ? 'bg-sky-500/15 text-sky-300 border border-sky-500/40'
+              : 'bg-white/5 text-acapomil-muted border border-white/10'
       }`}
     >
       <span
         className={`h-2 w-2 rounded-full ${
-          live ? 'bg-acapomil-green animate-pulse' : err ? 'bg-red-400' : 'bg-gray-500'
+          live
+            ? 'bg-acapomil-green animate-pulse'
+            : err
+              ? 'bg-red-400'
+              : connecting
+                ? 'bg-sky-400 animate-pulse'
+                : 'bg-gray-500'
         }`}
       />
       {LABELS[status] || 'EN ESPERA'}
