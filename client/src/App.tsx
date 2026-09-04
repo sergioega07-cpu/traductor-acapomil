@@ -7,11 +7,13 @@ import {
   Play,
   RefreshCw,
   Shield,
+  Smartphone,
   Square,
 } from 'lucide-react';
 import { Crest } from './components/Crest';
 import { StatusPill } from './components/StatusPill';
 import { ProjectionView } from './components/ProjectionView';
+import { MicView } from './components/MicView';
 import { useMicCapture } from './hooks/useMicCapture';
 import { useTranslatorSocket } from './hooks/useTranslatorSocket';
 import { createSyncChannel } from './lib/broadcast';
@@ -19,11 +21,18 @@ import { useSubtitleDisplay } from './lib/subtitleDisplay';
 import type { SourceLang, TargetLang } from './lib/types';
 import { deriveMode } from './lib/types';
 import { isValidTranslationText, stopSpeaking } from './lib/tts';
-import { resolveProjectionUrl } from './lib/projectionUrl';
+import { resolveMicUrl, resolveProjectionUrl } from './lib/projectionUrl';
 
 function isProjectionRoute() {
   const q = new URLSearchParams(window.location.search);
+  if (window.location.hash.includes('projection')) return true;
   return window.location.pathname.includes('projection') || q.get('mode') === 'projection';
+}
+
+function isMicRoute() {
+  const q = new URLSearchParams(window.location.search);
+  if (window.location.hash === '#/mic' || window.location.hash.includes('mic')) return true;
+  return window.location.pathname.includes('/mic') || q.get('mode') === 'mic';
 }
 
 const SOURCE_OPTIONS: { value: SourceLang; label: string }[] = [
@@ -39,6 +48,7 @@ const TARGET_OPTIONS: { value: TargetLang; label: string }[] = [
 
 export default function App() {
   if (isProjectionRoute()) return <ProjectionView />;
+  if (isMicRoute()) return <MicView />;
   return <ControlPanel />;
 }
 
@@ -49,7 +59,11 @@ function ControlPanel() {
   const [targetLang, setTargetLang] = useState<TargetLang>('es');
   const syncRef = useRef<ReturnType<typeof createSyncChannel> | null>(null);
   const [projectionUrl, setProjectionUrl] = useState('');
+  const [micUrl, setMicUrl] = useState('');
   const [copiedTv, setCopiedTv] = useState(false);
+  const [copiedMic, setCopiedMic] = useState(false);
+  /** When false, Mac does not capture local mic — use iPhone remote mic instead */
+  const [useMacMic, setUseMacMic] = useState(true);
 
   const mode = useMemo(() => deriveMode(sourceLang, targetLang), [sourceLang, targetLang]);
 
@@ -105,8 +119,11 @@ function ControlPanel() {
 
   useEffect(() => {
     let cancelled = false;
-    void resolveProjectionUrl().then((url) => {
-      if (!cancelled) setProjectionUrl(url);
+    void Promise.all([resolveProjectionUrl(), resolveMicUrl()]).then(([tv, mic]) => {
+      if (!cancelled) {
+        setProjectionUrl(tv);
+        setMicUrl(mic);
+      }
     });
     return () => {
       cancelled = true;
@@ -169,16 +186,36 @@ function ControlPanel() {
     }
   };
 
+  const copyMicUrl = async () => {
+    const url = micUrl || (await resolveMicUrl());
+    setMicUrl(url);
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedMic(true);
+      window.setTimeout(() => setCopiedMic(false), 2000);
+    } catch {
+      window.prompt('Copia esta URL para el micrófono del iPhone:', url);
+    }
+  };
+
   const onStart = async () => {
     tx.setError(null);
-    if (mic.permission !== 'granted') {
-      const ok = await mic.authorize();
-      if (!ok) {
-        tx.setError('Debes autorizar el micrófono para iniciar la traducción.');
-        return;
+    if (useMacMic) {
+      if (mic.permission !== 'granted') {
+        const ok = await mic.authorize();
+        if (!ok) {
+          tx.setError(
+            'Debes autorizar el micrófono del Mac, o desactiva «Micrófono local del Mac» y usa la URL de micrófono en el iPhone.'
+          );
+          return;
+        }
       }
     }
     tx.startSession(mode, targetLang);
+    if (!useMacMic) {
+      // Remote iPhone mic will feed the shared live session
+      return;
+    }
     try {
       await mic.start((b64) => tx.sendAudio(b64));
     } catch {
@@ -194,7 +231,7 @@ function ControlPanel() {
     syncRef.current?.post({ kind: 'speak_stop' });
   };
 
-  const listening = tx.status === 'listening' || mic.capturing;
+  const listening = tx.status === 'listening' || tx.status === 'connecting' || mic.capturing;
 
   const pairLabel =
     sourceLang === 'auto'
@@ -413,30 +450,59 @@ function ControlPanel() {
             </button>
           </div>
 
-          <div className="rounded-xl border border-acapomil-border bg-[#0d1118] p-3 space-y-2">
-            <p className="text-xs font-semibold tracking-wider text-acapomil-muted">
-              URL DE PROYECCIÓN (TV · MISMA WIFI)
-            </p>
-            <div className="flex flex-col sm:flex-row gap-2">
-              <input
-                readOnly
-                value={projectionUrl || 'Detectando IP de red local…'}
-                className="flex-1 min-w-0 rounded-lg border border-acapomil-border bg-black/40 px-3 py-2 text-xs sm:text-sm font-mono text-sky-200"
-                onFocus={(e) => e.target.select()}
-              />
-              <button
-                type="button"
-                onClick={() => void copyTvUrl()}
-                disabled={!projectionUrl}
-                className="inline-flex items-center justify-center gap-2 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-sm font-semibold text-sky-100 hover:bg-sky-500/20 disabled:opacity-50"
-              >
-                <Copy className="h-4 w-4" />
-                {copiedTv ? 'Copiado' : 'Copiar URL TV'}
-              </button>
+          <div className="rounded-xl border border-acapomil-border bg-[#0d1118] p-3 space-y-3">
+            <div className="space-y-2">
+              <p className="text-xs font-semibold tracking-wider text-acapomil-muted">
+                URL DE PROYECCIÓN (TV · MISMA WIFI)
+              </p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  readOnly
+                  value={projectionUrl || 'Detectando IP de red local…'}
+                  className="flex-1 min-w-0 rounded-lg border border-acapomil-border bg-black/40 px-3 py-2 text-xs sm:text-sm font-mono text-sky-200"
+                  onFocus={(e) => e.target.select()}
+                />
+                <button
+                  type="button"
+                  onClick={() => void copyTvUrl()}
+                  disabled={!projectionUrl}
+                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-sm font-semibold text-sky-100 hover:bg-sky-500/20 disabled:opacity-50"
+                >
+                  <Copy className="h-4 w-4" />
+                  {copiedTv ? 'Copiado' : 'Copiar URL TV'}
+                </button>
+              </div>
+              <p className="text-xs text-acapomil-muted">
+                Abre esta URL en el navegador del Samsung TV (misma WiFi). Sin HDMI.
+              </p>
             </div>
-            <p className="text-xs text-acapomil-muted">
-              Abre esta URL en el navegador del Samsung TV (misma WiFi). El Mac mantiene controles + micrófono. Sin HDMI.
-            </p>
+
+            <div className="border-t border-acapomil-border pt-3 space-y-2">
+              <p className="text-xs font-semibold tracking-wider text-acapomil-muted flex items-center gap-1.5">
+                <Smartphone className="h-3.5 w-3.5" />
+                URL DE MICRÓFONO (iPHONE · MISMA WIFI)
+              </p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  readOnly
+                  value={micUrl || 'Detectando IP de red local…'}
+                  className="flex-1 min-w-0 rounded-lg border border-acapomil-border bg-black/40 px-3 py-2 text-xs sm:text-sm font-mono text-emerald-200"
+                  onFocus={(e) => e.target.select()}
+                />
+                <button
+                  type="button"
+                  onClick={() => void copyMicUrl()}
+                  disabled={!micUrl}
+                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm font-semibold text-emerald-100 hover:bg-emerald-500/20 disabled:opacity-50"
+                >
+                  <Copy className="h-4 w-4" />
+                  {copiedMic ? 'Copiado' : 'Copiar URL mic'}
+                </button>
+              </div>
+              <p className="text-xs text-acapomil-muted">
+                Abre en Safari del iPhone (otra habitación). Permite mic → Enviar audio. Mac inicia la traducción; TV muestra subtítulos.
+              </p>
+            </div>
           </div>
 
           {tx.model ? (
@@ -493,8 +559,23 @@ function ControlPanel() {
               <RefreshCw className="h-4 w-4" />
             </button>
           </div>
+          <label className="mt-3 flex items-start gap-2 text-sm cursor-pointer select-none">
+            <input
+              type="checkbox"
+              className="mt-1 rounded border-acapomil-border"
+              checked={useMacMic}
+              disabled={listening}
+              onChange={(e) => setUseMacMic(e.target.checked)}
+            />
+            <span>
+              <span className="font-medium">Micrófono local del Mac</span>
+              <span className="block text-xs text-acapomil-muted mt-0.5">
+                Desactívalo si vas a usar solo el iPhone (URL mic). Así el Mac no captura audio local.
+              </span>
+            </span>
+          </label>
           <p className="mt-2 text-xs text-acapomil-muted">
-            Si usas iPhone: Continuity Mic en Ajustes del Mac; si no aparece, usa el mic del Mac.
+            Preferido: iPhone con URL de micrófono en la sala de presentación (misma WiFi). Continuity no hace falta.
           </p>
         </section>
       </div>
