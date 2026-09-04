@@ -440,6 +440,62 @@ export function stopSpeaking() {
   if (s) s.cancel();
 }
 
+
+/** Normalize text for TTS dedupe comparisons. */
+export function normalizeSpeakText(text: string): string {
+  return text.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+export function textsLookIdentical(a: string, b: string): boolean {
+  const na = normalizeSpeakText(a);
+  const nb = normalizeSpeakText(b);
+  return Boolean(na) && na === nb;
+}
+
+/**
+ * Skip speak when text matches last spoken, or is only a short mid-speak
+ * prefix extension (< +25% chars) unless this is a new final turn.
+ */
+export function shouldSkipDuplicateSpeak(
+  text: string,
+  lastSpoken: string,
+  options?: { midSpeak?: boolean; isFinal?: boolean }
+): boolean {
+  const next = normalizeSpeakText(text);
+  const prev = normalizeSpeakText(lastSpoken);
+  if (!next) return true;
+  if (next === prev) return true;
+  if (
+    options?.midSpeak &&
+    !options?.isFinal &&
+    prev &&
+    next.startsWith(prev) &&
+    next.length < Math.ceil(prev.length * 1.25)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** en-es (or auto→es): translation still mirrors English original — wait for Spanish. */
+export function shouldWaitForRealTranslation(
+  mode: string,
+  original: string | undefined,
+  translation: string | undefined,
+  targetLang?: string
+): boolean {
+  if (!original?.trim() || !translation?.trim()) return false;
+  if (!textsLookIdentical(original, translation)) return false;
+  if (mode === 'en-es') return true;
+  if (mode === 'auto' && targetLang === 'es') return true;
+  return false;
+}
+
+export function isSpeaking(): boolean {
+  const s = synth();
+  return Boolean(s && (s.speaking || s.pending));
+}
+
 export function langForTranslation(
   mode: string,
   detected?: string,

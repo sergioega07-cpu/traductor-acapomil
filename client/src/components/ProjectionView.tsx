@@ -4,7 +4,17 @@ import { Crest } from './Crest';
 import { StatusPill } from './StatusPill';
 import { createSyncChannel, type SyncMessage } from '../lib/broadcast';
 import type { AppStatus, HistoryItem, PartialSubtitles, TranslateMode } from '../lib/types';
-import { langForTranslation, speakText, stopSpeaking, waitForVoices } from '../lib/tts';
+import {
+  langForTranslation,
+  normalizeSpeakText,
+  shouldSkipDuplicateSpeak,
+  shouldWaitForRealTranslation,
+  speakText,
+  stopSpeaking,
+  textsLookIdentical,
+  isSpeaking,
+  waitForVoices,
+} from '../lib/tts';
 
 function targetLabel(mode: TranslateMode, detected?: string) {
   if (mode === 'en-es') return 'ESPANOL';
@@ -78,11 +88,20 @@ export function ProjectionView() {
       } else if (msg.kind === 'speak') {
         // One-shot from control (history cards / auto-voice). Sticky follow speaks locally.
         if (followSpeakRef.current) return;
-        speakText(msg.text, msg.lang, () => setSpeaking(true), () => setSpeaking(false));
+        const t = msg.text?.trim();
+        if (!t) return;
+        if (
+          shouldSkipDuplicateSpeak(t, lastFollowSpokenRef.current, { isFinal: true })
+        ) {
+          return;
+        }
+        lastFollowSpokenRef.current = normalizeSpeakText(t);
+        speakText(t, msg.lang, () => setSpeaking(true), () => setSpeaking(false));
       } else if (msg.kind === 'speak_stop') {
-        if (!followSpeakRef.current) {
-          stopSpeaking();
-          setSpeaking(false);
+        stopFollowSpeaking();
+        if (followSpeakRef.current) {
+          setFollowSpeak(false);
+          followSpeakRef.current = false;
         }
       } else if (msg.kind === 'speak_follow') {
         applyFollowSpeak(msg.on, false);
@@ -108,16 +127,45 @@ export function ProjectionView() {
   const detected = latest?.detectedLang;
   const live = status === 'listening';
 
-  const speakFollowLatest = (text: string, immediate: boolean) => {
+  const speakFollowLatest = (
+    text: string,
+    immediate: boolean,
+    opts?: { isFinal?: boolean; original?: string }
+  ) => {
     const t = text.trim();
     if (!t || !followSpeakRef.current) return;
-    if (t === lastFollowSpokenRef.current) return;
+
+    if (
+      shouldWaitForRealTranslation(modeRef.current, opts?.original, t)
+    ) {
+      return;
+    }
+
+    if (
+      shouldSkipDuplicateSpeak(t, lastFollowSpokenRef.current, {
+        midSpeak: isSpeaking() || speaking,
+        isFinal: opts?.isFinal,
+      })
+    ) {
+      return;
+    }
 
     const run = () => {
       if (!followSpeakRef.current) return;
-      if (!t || t === lastFollowSpokenRef.current) return;
-      lastFollowSpokenRef.current = t;
+      if (shouldWaitForRealTranslation(modeRef.current, opts?.original, t)) {
+        return;
+      }
+      if (
+        shouldSkipDuplicateSpeak(t, lastFollowSpokenRef.current, {
+          midSpeak: true,
+          isFinal: opts?.isFinal,
+        })
+      ) {
+        return;
+      }
+      lastFollowSpokenRef.current = normalizeSpeakText(t);
       const lang = langForTranslation(modeRef.current, latestRef.current?.detectedLang);
+      // speakText cancels queue before starting
       speakText(t, lang, () => setSpeaking(true), () => setSpeaking(false));
     };
 
@@ -126,25 +174,35 @@ export function ProjectionView() {
     else followDebounceRef.current = window.setTimeout(run, 500);
   };
 
-  // When sticky turns ON, speak current caption once
+  // When sticky turns ON, speak current caption once (translation only)
   const wasFollowSpeakRef = useRef(false);
   useEffect(() => {
     if (followSpeak && !wasFollowSpeakRef.current) {
-      if (display) {
+      const translation = (partial.translation || latest?.translation || '').trim();
+      const original = (partial.original || latest?.original || '').trim();
+      if (translation) {
         lastFollowSpokenRef.current = '';
-        speakFollowLatest(display, true);
+        speakFollowLatest(translation, true, { isFinal: true, original });
       }
     }
     wasFollowSpeakRef.current = followSpeak;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [followSpeak]);
 
-  // Sticky: follow live display changes (partials debounced; finals prompt)
+  // Sticky: only translation field; never speak original if translation empty
   useEffect(() => {
     if (!followSpeak) return;
-    if (!display) return;
+    const partialTx = partial.translation?.trim() ?? '';
+    const translation =
+      partialTx ||
+      (!partial.original?.trim() ? latest?.translation?.trim() ?? '' : '');
+    if (!translation) return;
     const isPartial = Boolean(partial.translation?.trim());
-    speakFollowLatest(display, !isPartial);
+    const original = partial.original || latest?.original || '';
+    speakFollowLatest(translation, !isPartial, {
+      isFinal: !isPartial,
+      original,
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [display, followSpeak, partial.translation]);
 
@@ -193,27 +251,51 @@ export function ProjectionView() {
 
         {/* Bottom-third movie subtitle block */}
         <div className="relative z-10 flex flex-col items-center justify-end px-5 sm:px-10 lg:px-16 pb-8 md:pb-12 lg:pb-14 w-full">
-          {display ? (
+          {display || original ? (
             <div className="w-full max-w-6xl xl:max-w-7xl mx-auto text-center">
-              {original ? (
-                <p
-                  className="mb-3 md:mb-5 text-gray-400/85 whitespace-pre-wrap break-words leading-relaxed drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]"
-                  style={{ fontSize: 'clamp(1rem, 1.6vw + 0.35rem, 1.55rem)' }}
-                >
-                  {original}
-                </p>
-              ) : null}
-              <div className="rounded-2xl bg-black/70 backdrop-blur-sm border border-white/10 px-5 py-6 sm:px-8 sm:py-8 md:px-12 md:py-10 shadow-[0_12px_60px_rgba(0,0,0,0.65)]">
-                <p
-                  className="font-semibold text-white whitespace-pre-wrap break-words drop-shadow-[0_2px_12px_rgba(0,0,0,0.85)]"
-                  style={{
-                    fontSize: 'clamp(2rem, 5vw + 0.25rem, 4.75rem)',
-                    lineHeight: 1.3,
-                  }}
-                >
-                  {display}
-                </p>
-              </div>
+              {(() => {
+                const identical =
+                  Boolean(original.trim()) &&
+                  Boolean(display.trim()) &&
+                  textsLookIdentical(original, display);
+                return (
+                  <>
+                    {original && !identical ? (
+                      <p
+                        className="mb-3 md:mb-5 text-gray-400/85 whitespace-pre-wrap break-words leading-relaxed drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]"
+                        style={{
+                          fontSize: 'clamp(1rem, 1.6vw + 0.35rem, 1.55rem)',
+                        }}
+                      >
+                        {original}
+                      </p>
+                    ) : original && identical ? (
+                      <p
+                        className="mb-3 md:mb-5 text-gray-400/85 whitespace-pre-wrap break-words leading-relaxed drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]"
+                        style={{
+                          fontSize: 'clamp(1rem, 1.6vw + 0.35rem, 1.55rem)',
+                        }}
+                      >
+                        {original}
+                        <span className="ml-2 text-sky-400/80 font-medium normal-case tracking-normal">
+                          · traduciendo…
+                        </span>
+                      </p>
+                    ) : null}
+                    <div className="rounded-2xl bg-black/70 backdrop-blur-sm border border-white/10 px-5 py-6 sm:px-8 sm:py-8 md:px-12 md:py-10 shadow-[0_12px_60px_rgba(0,0,0,0.65)]">
+                      <p
+                        className="font-semibold text-white whitespace-pre-wrap break-words drop-shadow-[0_2px_12px_rgba(0,0,0,0.85)]"
+                        style={{
+                          fontSize: 'clamp(2rem, 5vw + 0.25rem, 4.75rem)',
+                          lineHeight: 1.3,
+                        }}
+                      >
+                        {identical ? 'traduciendo…' : display || '…'}
+                      </p>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           ) : (
             <div className="w-full max-w-5xl mx-auto text-center rounded-2xl bg-black/50 border border-white/10 px-6 py-14 md:py-20">

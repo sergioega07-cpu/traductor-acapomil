@@ -24,9 +24,14 @@ import { deriveMode } from './lib/types';
 import {
   formatVoiceOption,
   langForTranslation,
+  normalizeSpeakText,
   pickVoice,
+  shouldSkipDuplicateSpeak,
+  shouldWaitForRealTranslation,
   speakText,
   stopSpeaking,
+  textsLookIdentical,
+  isSpeaking,
   voicesForLang,
   waitForVoices,
 } from './lib/tts';
@@ -188,11 +193,22 @@ function ControlPanel() {
   const setFollowSpeakSynced = (on: boolean, broadcast: boolean) => {
     setFollowSpeak(on);
     followSpeakRef.current = on;
+    if (on) {
+      // Mutual exclusion: sticky listen owns the only speaking path
+      setAutoVoice(false);
+    }
     if (!on) stopFollowSpeaking();
     if (broadcast) {
       syncRef.current?.post({ kind: 'speak_follow', on });
       if (!on) syncRef.current?.post({ kind: 'speak_stop' });
     }
+  };
+
+  const setAutoVoiceExclusive = (on: boolean) => {
+    if (on && followSpeakRef.current) {
+      setFollowSpeakSynced(false, true);
+    }
+    setAutoVoice(on);
   };
 
   useEffect(() => {
@@ -231,16 +247,58 @@ function ControlPanel() {
   voiceURIRef.current = voiceURI;
   historyRef.current = tx.history;
 
-  const speakFollowLatest = (text: string, immediate: boolean) => {
+  const speakFollowLatest = (
+    text: string,
+    immediate: boolean,
+    opts?: { isFinal?: boolean; original?: string }
+  ) => {
     const t = text.trim();
     if (!t || !followSpeakRef.current) return;
-    if (t === lastFollowSpokenRef.current) return;
+
+    // Sticky path: translation only — never fall back to original
+    if (
+      shouldWaitForRealTranslation(
+        modeRef.current,
+        opts?.original,
+        t,
+        targetLangRef.current
+      )
+    ) {
+      return;
+    }
+
+    const midSpeak = isSpeaking() || speakingId != null;
+    if (
+      shouldSkipDuplicateSpeak(t, lastFollowSpokenRef.current, {
+        midSpeak,
+        isFinal: opts?.isFinal,
+      })
+    ) {
+      return;
+    }
 
     const run = () => {
       if (!followSpeakRef.current) return;
-      if (!t || t === lastFollowSpokenRef.current) return;
-      // Interrupt-to-latest: speakText already cancels in-flight TTS
-      lastFollowSpokenRef.current = t;
+      if (
+        shouldWaitForRealTranslation(
+          modeRef.current,
+          opts?.original,
+          t,
+          targetLangRef.current
+        )
+      ) {
+        return;
+      }
+      if (
+        shouldSkipDuplicateSpeak(t, lastFollowSpokenRef.current, {
+          midSpeak: true,
+          isFinal: opts?.isFinal,
+        })
+      ) {
+        return;
+      }
+      // Interrupt-to-latest: speakText cancels queue + in-flight TTS
+      lastFollowSpokenRef.current = normalizeSpeakText(t);
       const hist0 = historyRef.current[0];
       const lang = langForTranslation(
         modeRef.current,
@@ -271,22 +329,25 @@ function ControlPanel() {
   useEffect(() => {
     if (followSpeak && !wasFollowSpeakRef.current) {
       const text = (tx.partial.translation || tx.history[0]?.translation || '').trim();
+      const original = (tx.partial.original || tx.history[0]?.original || '').trim();
       if (text) {
         lastFollowSpokenRef.current = '';
-        speakFollowLatest(text, true);
+        speakFollowLatest(text, true, { isFinal: true, original });
       }
     }
     wasFollowSpeakRef.current = followSpeak;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [followSpeak]);
 
-  // Sticky listen: debounced partial translations
+  // Sticky listen: debounced partial translations only (never original)
   useEffect(() => {
     if (!followSpeak) return;
     const text = tx.partial.translation?.trim();
     if (!text) return;
-    if (text === lastFollowSpokenRef.current) return;
-    speakFollowLatest(text, false);
+    speakFollowLatest(text, false, {
+      isFinal: false,
+      original: tx.partial.original,
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tx.partial.translation, followSpeak]);
 
@@ -295,11 +356,15 @@ function ControlPanel() {
     if (!newest) return;
     syncRef.current?.post({ kind: 'final', item: newest });
     if (newest.id === lastAutoId.current) return;
-    if (!newest.translation) return;
+    if (!newest.translation?.trim()) return;
 
+    // Only ONE speaking path: sticky wins over autoVoice
     if (followSpeak) {
       lastAutoId.current = newest.id;
-      speakFollowLatest(newest.translation, true);
+      speakFollowLatest(newest.translation, true, {
+        isFinal: true,
+        original: newest.original,
+      });
     } else if (autoVoice) {
       lastAutoId.current = newest.id;
       speakItem(newest);
@@ -372,12 +437,29 @@ function ControlPanel() {
   };
 
   const speakItem = (item: HistoryItem) => {
+    if (followSpeakRef.current) return; // sticky owns the only path
+    const translation = item.translation?.trim();
+    if (!translation) return;
+    if (
+      shouldWaitForRealTranslation(item.mode, item.original, translation, targetLang)
+    ) {
+      return;
+    }
+    if (
+      shouldSkipDuplicateSpeak(translation, lastFollowSpokenRef.current, {
+        isFinal: true,
+      })
+    ) {
+      return;
+    }
     const lang = langForTranslation(item.mode, item.detectedLang, targetLang);
     setVoiceLang(lang);
     setSpeakingId(item.id);
-    syncRef.current?.post({ kind: 'speak', text: item.translation, lang, id: item.id });
+    lastFollowSpokenRef.current = normalizeSpeakText(translation);
+    syncRef.current?.post({ kind: 'speak', text: translation, lang, id: item.id });
+    // speakText always stopSpeaking()/cancels queue before a new utterance
     speakText(
-      item.translation,
+      translation,
       lang,
       () => setSpeakingId(item.id),
       () => setSpeakingId(null),
@@ -414,13 +496,11 @@ function ControlPanel() {
   const onStop = () => {
     mic.stop();
     tx.stopSession();
-    if (followSpeakRef.current) {
-      setFollowSpeakSynced(false, true);
-    } else {
-      stopSpeaking();
-      setSpeakingId(null);
-      syncRef.current?.post({ kind: 'speak_stop' });
-    }
+    // Always clear sticky follow + TTS queue / interval / lastSpoken
+    setFollowSpeakSynced(false, true);
+    stopSpeaking();
+    setSpeakingId(null);
+    lastFollowSpokenRef.current = '';
   };
 
   const onClear = () => {
@@ -591,23 +671,54 @@ function ControlPanel() {
               <div className="flex flex-1 flex-col items-center justify-end px-4 sm:px-8 md:px-12 pb-8 md:pb-10 pt-6 text-center">
                 {tx.partial.original || tx.partial.translation || allHistory[0] ? (
                   <>
-                    <p
-                      className="w-full max-w-5xl text-gray-400/90 mb-3 md:mb-4 whitespace-pre-wrap break-words leading-relaxed"
-                      style={{ fontSize: 'clamp(0.95rem, 1.4vw + 0.4rem, 1.35rem)' }}
-                    >
-                      {tx.partial.original || allHistory[0]?.original || '…'}
-                    </p>
-                    <div className="w-full max-w-6xl rounded-xl bg-black/45 px-4 py-5 md:px-8 md:py-7 border border-white/5 shadow-[0_8px_40px_rgba(0,0,0,0.45)]">
-                      <p
-                        className="font-semibold text-white whitespace-pre-wrap break-words"
-                        style={{
-                          fontSize: 'clamp(1.75rem, 4vw, 3.5rem)',
-                          lineHeight: 1.35,
-                        }}
-                      >
-                        {tx.partial.translation || allHistory[0]?.translation || '…'}
-                      </p>
-                    </div>
+                    {(() => {
+                      const liveOriginal =
+                        tx.partial.original || allHistory[0]?.original || '';
+                      const liveTranslation =
+                        tx.partial.translation || allHistory[0]?.translation || '';
+                      const identical =
+                        Boolean(liveOriginal.trim()) &&
+                        textsLookIdentical(liveOriginal, liveTranslation);
+                      return (
+                        <>
+                          {!identical ? (
+                            <p
+                              className="w-full max-w-5xl text-gray-400/90 mb-3 md:mb-4 whitespace-pre-wrap break-words leading-relaxed"
+                              style={{
+                                fontSize: 'clamp(0.95rem, 1.4vw + 0.4rem, 1.35rem)',
+                              }}
+                            >
+                              {liveOriginal || '…'}
+                            </p>
+                          ) : (
+                            <p
+                              className="w-full max-w-5xl text-gray-400/90 mb-3 md:mb-4 whitespace-pre-wrap break-words leading-relaxed"
+                              style={{
+                                fontSize: 'clamp(0.95rem, 1.4vw + 0.4rem, 1.35rem)',
+                              }}
+                            >
+                              {liveOriginal}
+                              <span className="ml-2 text-sky-400/80 font-medium">
+                                · traduciendo…
+                              </span>
+                            </p>
+                          )}
+                          <div className="w-full max-w-6xl rounded-xl bg-black/45 px-4 py-5 md:px-8 md:py-7 border border-white/5 shadow-[0_8px_40px_rgba(0,0,0,0.45)]">
+                            <p
+                              className="font-semibold text-white whitespace-pre-wrap break-words"
+                              style={{
+                                fontSize: 'clamp(1.75rem, 4vw, 3.5rem)',
+                                lineHeight: 1.35,
+                              }}
+                            >
+                              {identical
+                                ? 'traduciendo…'
+                                : liveTranslation || '…'}
+                            </p>
+                          </div>
+                        </>
+                      );
+                    })()}
                   </>
                 ) : (
                   <div className="flex flex-1 w-full flex-col items-center justify-center py-10 md:py-16">
@@ -718,12 +829,13 @@ function ControlPanel() {
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 rounded-xl border border-acapomil-border bg-[#0d1118] px-3 py-3">
             <button
               type="button"
-              onClick={() => setAutoVoice((v) => !v)}
+              onClick={() => setAutoVoiceExclusive(!autoVoice)}
               className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium shrink-0 ${
                 autoVoice
                   ? 'border-acapomil-green/50 text-acapomil-green'
                   : 'border-white/10 text-acapomil-muted'
               }`}
+              title="Exclusivo con «Escuchar subtítulo»: solo una ruta de voz a la vez"
             >
               <Volume2 className="h-4 w-4" />
               VOZ AUTOMÁTICA: {autoVoice ? 'ACTIVADA' : 'DESACTIVADA'}
