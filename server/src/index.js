@@ -1,0 +1,242 @@
+import http from 'http';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import { WebSocketServer } from 'ws';
+import { openLiveSession } from './geminiLive.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+
+const PORT = Number(process.env.PORT || 3001);
+const apiKey = process.env.GEMINI_API_KEY || '';
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+app.get('/api/health', (_req, res) => {
+  res.json({
+    ok: true,
+    hasApiKey: Boolean(apiKey),
+    service: 'traductor-acapomil',
+  });
+});
+
+const clientDist = path.resolve(__dirname, '../../client/dist');
+app.use(express.static(clientDist));
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api') || req.path.startsWith('/ws')) return next();
+  res.sendFile(path.join(clientDist, 'index.html'), (err) => {
+    if (err) next();
+  });
+});
+
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server, path: '/ws' });
+
+function send(ws, payload) {
+  if (ws.readyState === ws.OPEN) {
+    ws.send(JSON.stringify(payload));
+  }
+}
+
+wss.on('connection', (ws) => {
+  let live = null;
+  let mode = 'en-es';
+  let originalBuf = '';
+  let translationBuf = '';
+  let turnId = 0;
+
+  send(ws, {
+    type: 'status',
+    status: 'ready',
+    hasApiKey: Boolean(apiKey),
+  });
+
+  const flushTurn = (force = false) => {
+    const original = originalBuf.trim();
+    const translation = translationBuf.trim();
+    if (!original && !translation) return;
+    if (!force && (!original || !translation)) return;
+    turnId += 1;
+    send(ws, {
+      type: 'final',
+      id: `t-${Date.now()}-${turnId}`,
+      original,
+      translation,
+      mode,
+      detectedLang: guessLang(original, mode),
+      ts: new Date().toISOString(),
+    });
+    originalBuf = '';
+    translationBuf = '';
+  };
+
+  ws.on('message', async (raw, isBinary) => {
+    try {
+      if (isBinary) {
+        if (live) {
+          live.sendAudioBase64(Buffer.from(raw).toString('base64'));
+        }
+        return;
+      }
+
+      const msg = JSON.parse(String(raw));
+
+      if (msg.type === 'start') {
+        if (!apiKey) {
+          send(ws, {
+            type: 'error',
+            message:
+              'Falta GEMINI_API_KEY en el servidor. Copia .env.example a .env y agrega tu clave de Google AI Studio.',
+          });
+          return;
+        }
+        if (live) {
+          live.close();
+          live = null;
+        }
+        mode = normalizeMode(msg.mode);
+        originalBuf = '';
+        translationBuf = '';
+        send(ws, { type: 'status', status: 'connecting', mode });
+
+        live = await openLiveSession({
+          apiKey,
+          mode,
+          onEvent: (ev) => {
+            if (ev.type === 'status') {
+              send(ws, ev);
+              return;
+            }
+            if (ev.type === 'interim') {
+              send(ws, {
+                type: 'interim',
+                role: ev.role,
+                text: ev.text,
+                mode,
+              });
+              return;
+            }
+            if (ev.type === 'transcript') {
+              if (ev.role === 'original') {
+                // Los transcripts de Live suelen ser acumulativos por turno
+                originalBuf = ev.text;
+              } else if (ev.role === 'translation') {
+                translationBuf = ev.text;
+              }
+              send(ws, {
+                type: 'partial',
+                original: originalBuf,
+                translation: translationBuf,
+                mode,
+                role: ev.role,
+              });
+              return;
+            }
+            if (ev.type === 'turn_complete') {
+              flushTurn(true);
+              send(ws, { type: 'turn_complete' });
+              return;
+            }
+            if (ev.type === 'interrupted') {
+              send(ws, { type: 'interrupted' });
+            }
+          },
+          onError: (message) => {
+            send(ws, { type: 'error', message: `Gemini Live: ${message}` });
+          },
+          onClose: (reason) => {
+            send(ws, { type: 'status', status: 'disconnected', reason });
+            live = null;
+          },
+        });
+
+        send(ws, {
+          type: 'status',
+          status: 'listening',
+          mode,
+          model: live.model,
+        });
+        return;
+      }
+
+      if (msg.type === 'audio') {
+        if (live && msg.data) {
+          live.sendAudioBase64(msg.data);
+        }
+        return;
+      }
+
+      if (msg.type === 'audio_end') {
+        if (live) live.sendAudioStreamEnd();
+        return;
+      }
+
+      if (msg.type === 'stop') {
+        if (live) {
+          try {
+            live.sendAudioStreamEnd();
+          } catch (_) {}
+          flushTurn(true);
+          live.close();
+          live = null;
+        }
+        send(ws, { type: 'status', status: 'stopped' });
+        return;
+      }
+
+      if (msg.type === 'set_mode') {
+        mode = normalizeMode(msg.mode);
+        send(ws, { type: 'status', status: 'mode', mode });
+        // Cambio de modo con sesion activa: el cliente debe detener e iniciar de nuevo.
+        if (live) {
+          send(ws, {
+            type: 'status',
+            status: 'mode',
+            mode,
+            message: 'Modo actualizado. Deten e inicia de nuevo para aplicar el cambio en Gemini Live.',
+          });
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      send(ws, {
+        type: 'error',
+        message: err?.message || 'Error procesando mensaje WebSocket',
+      });
+    }
+  });
+
+  ws.on('close', () => {
+    if (live) {
+      live.close();
+      live = null;
+    }
+  });
+});
+
+function normalizeMode(mode) {
+  if (mode === 'es-en' || mode === 'es→en' || mode === 'ES_EN') return 'es-en';
+  if (mode === 'auto' || mode === 'AUTO') return 'auto';
+  return 'en-es';
+}
+
+function guessLang(text, mode) {
+  if (mode === 'en-es') return 'en';
+  if (mode === 'es-en') return 'es';
+  const sample = (text || '').toLowerCase();
+  const esHits = (sample.match(/[áéíóúñ¿¡]|(\b(el|la|de|que|y|en|los|se|del|las|un|por|con|para|una|es|al)\b)/g) || []).length;
+  const enHits = (sample.match(/\b(the|and|is|to|of|in|that|it|for|on|with|as|was|are|this)\b/g) || []).length;
+  if (esHits > enHits) return 'es';
+  if (enHits > esHits) return 'en';
+  return 'auto';
+}
+
+server.listen(PORT, () => {
+  console.log(`[traductor-acapomil] HTTP+WS en http://localhost:${PORT}`);
+  console.log(`[traductor-acapomil] GEMINI_API_KEY: ${apiKey ? 'configurada' : 'AUSENTE'}`);
+});
