@@ -2,8 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AppStatus, HistoryItem, PartialSubtitles, ServerMessage, TranslateMode } from '../lib/types';
 
 function wsUrl() {
+  // En desarrollo conectamos directo al backend (evita fallos del proxy WS de Vite)
+  if (import.meta.env.DEV) {
+    return 'ws://127.0.0.1:3001/ws';
+  }
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  // En dev Vite proxy /ws; en prod mismo host
   return `${proto}//${window.location.host}/ws`;
 }
 
