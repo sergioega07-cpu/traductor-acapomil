@@ -314,39 +314,45 @@ function ControlPanel() {
 
               <div className="flex flex-1 flex-col items-center justify-end px-4 sm:px-8 md:px-12 pb-8 md:pb-10 pt-6 text-center">
                 {subtitle.largeText || liveOriginal ? (
-                  <>
+                  <div className="w-full max-w-5xl space-y-3 md:space-y-4">
                     {subtitle.originalLine ? (
                       <p
-                        className="w-full max-w-5xl text-gray-400/90 mb-3 md:mb-4 whitespace-pre-wrap break-words leading-relaxed"
+                        className="w-full font-normal text-gray-400/90 whitespace-pre-wrap break-words leading-relaxed"
                         style={{
-                          fontSize: 'clamp(0.95rem, 1.4vw + 0.4rem, 1.35rem)',
+                          fontSize: 'clamp(1rem, 1.5vw + 0.4rem, 1.45rem)',
                         }}
                       >
                         {subtitle.originalLine}
                       </p>
                     ) : null}
-                    <div className="w-full max-w-6xl rounded-xl bg-black/45 px-4 py-5 md:px-8 md:py-7 border border-white/5 shadow-[0_8px_40px_rgba(0,0,0,0.45)]">
+                    {subtitle.largeText && subtitle.largeText !== 'traduciendo…' ? (
                       <p
-                        className="font-semibold text-white whitespace-pre-wrap break-words"
+                        className="w-full font-normal text-gray-400/90 whitespace-pre-wrap break-words leading-relaxed"
                         style={{
-                          fontSize: 'clamp(1.75rem, 4vw, 3.5rem)',
-                          lineHeight: 1.35,
+                          fontSize: 'clamp(1rem, 1.5vw + 0.4rem, 1.45rem)',
                         }}
                       >
-                        {subtitle.largeText || '…'}
+                        {subtitle.largeText}
                       </p>
-                    </div>
-                  </>
+                    ) : subtitle.largeText === 'traduciendo…' && !subtitle.originalLine ? (
+                      <p
+                        className="w-full font-normal text-sky-400/80 whitespace-pre-wrap break-words leading-relaxed"
+                        style={{
+                          fontSize: 'clamp(1rem, 1.5vw + 0.4rem, 1.45rem)',
+                        }}
+                      >
+                        traduciendo…
+                      </p>
+                    ) : null}
+                  </div>
                 ) : (
                   <div className="flex flex-1 w-full flex-col items-center justify-center py-10 md:py-16">
-                    <div className="w-full max-w-4xl rounded-xl bg-black/35 border border-white/5 px-6 py-12 md:py-16">
-                      <p
-                        className="text-gray-500 font-medium tracking-wide"
-                        style={{ fontSize: 'clamp(1.25rem, 2.5vw, 2rem)' }}
-                      >
-                        Escenario de subtítulos
-                      </p>
-                    </div>
+                    <p
+                      className="text-gray-500 font-normal tracking-wide"
+                      style={{ fontSize: 'clamp(1rem, 1.5vw + 0.4rem, 1.45rem)' }}
+                    >
+                      Escenario de subtítulos
+                    </p>
                   </div>
                 )}
               </div>

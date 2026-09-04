@@ -261,45 +261,52 @@ export function ProjectionView() {
 
         <div className="relative z-10 flex flex-col items-center justify-end px-5 sm:px-10 lg:px-16 pb-8 md:pb-12 lg:pb-14 w-full">
           {display.largeText || liveOriginal ? (
-            <div className="w-full max-w-6xl xl:max-w-7xl mx-auto text-center">
+            <div className="w-full max-w-6xl xl:max-w-7xl mx-auto text-center space-y-3 md:space-y-4">
               {display.originalLine ? (
                 <p
-                  className="mb-3 md:mb-5 text-gray-400/85 whitespace-pre-wrap break-words leading-relaxed drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]"
+                  className="font-normal text-gray-400/90 whitespace-pre-wrap break-words leading-relaxed drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]"
                   style={{
-                    fontSize: 'clamp(1rem, 1.6vw + 0.35rem, 1.55rem)',
+                    fontSize: 'clamp(1.15rem, 2vw + 0.35rem, 1.85rem)',
                   }}
                 >
                   {display.originalLine}
-                  {display.showTranslatingBadge ? (
-                    <span className="ml-2 text-sky-400/80 font-medium normal-case tracking-normal text-sm">
+                  {display.showTranslatingBadge && !display.hasRealTranslation ? (
+                    <span className="ml-2 text-sky-400/80 font-medium normal-case tracking-normal text-sm md:text-base">
                       · traduciendo…
                     </span>
                   ) : null}
                 </p>
-              ) : display.showTranslatingBadge ? (
-                <p className="mb-3 md:mb-5 text-sky-400/80 text-sm font-medium">traduciendo…</p>
+              ) : display.showTranslatingBadge && !display.hasRealTranslation ? (
+                <p className="text-sky-400/80 text-sm md:text-base font-medium">traduciendo…</p>
               ) : null}
-              <div className="rounded-2xl bg-black/70 backdrop-blur-sm border border-white/10 px-5 py-6 sm:px-8 sm:py-8 md:px-12 md:py-10 shadow-[0_12px_60px_rgba(0,0,0,0.65)]">
+              {display.largeText && display.largeText !== 'traduciendo…' ? (
                 <p
-                  className="font-semibold text-white whitespace-pre-wrap break-words drop-shadow-[0_2px_12px_rgba(0,0,0,0.85)]"
+                  className="font-normal text-gray-400/90 whitespace-pre-wrap break-words leading-relaxed drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]"
                   style={{
-                    fontSize: 'clamp(2rem, 5vw + 0.25rem, 4.75rem)',
-                    lineHeight: 1.3,
+                    fontSize: 'clamp(1.15rem, 2vw + 0.35rem, 1.85rem)',
                   }}
                 >
-                  {display.largeText || '…'}
+                  {display.largeText}
                 </p>
-              </div>
+              ) : display.largeText === 'traduciendo…' && !display.originalLine ? (
+                <p className="font-normal text-sky-400/80 whitespace-pre-wrap break-words leading-relaxed"
+                  style={{
+                    fontSize: 'clamp(1.15rem, 2vw + 0.35rem, 1.85rem)',
+                  }}
+                >
+                  traduciendo…
+                </p>
+              ) : null}
             </div>
           ) : (
-            <div className="w-full max-w-5xl mx-auto text-center rounded-2xl bg-black/50 border border-white/10 px-6 py-14 md:py-20">
+            <div className="w-full max-w-5xl mx-auto text-center px-6 py-10 md:py-14">
               <p
-                className="font-semibold text-gray-400 tracking-wide break-words"
-                style={{ fontSize: 'clamp(1.75rem, 4vw + 0.5rem, 3.5rem)' }}
+                className="font-normal text-gray-500 tracking-wide break-words"
+                style={{ fontSize: 'clamp(1.15rem, 2vw + 0.35rem, 1.85rem)' }}
               >
                 ESPERANDO ALOCUCIÓN...
               </p>
-              <p className="mt-4 text-acapomil-muted text-base md:text-lg">
+              <p className="mt-3 text-acapomil-muted text-sm md:text-base">
                 La traducción aparecerá automáticamente en pantalla
               </p>
             </div>
