@@ -50,6 +50,8 @@ wss.on('connection', (ws) => {
   let originalBuf = '';
   let translationBuf = '';
   let turnId = 0;
+  let audioChunkCount = 0;
+  let lastAudioLogAt = 0;
 
   send(ws, {
     type: 'status',
@@ -104,6 +106,8 @@ wss.on('connection', (ws) => {
         targetLang = normalizeTargetLang(msg.targetLang, mode);
         originalBuf = '';
         translationBuf = '';
+        audioChunkCount = 0;
+        lastAudioLogAt = 0;
         send(ws, { type: 'status', status: 'connecting', mode, targetLang });
 
         live = await openLiveSession({
@@ -170,6 +174,12 @@ wss.on('connection', (ws) => {
 
       if (msg.type === 'audio') {
         if (live && msg.data) {
+          audioChunkCount += 1;
+          const now = Date.now();
+          if (now - lastAudioLogAt >= 2000) {
+            console.log(`[audio] chunks received: ${audioChunkCount} (session total)`);
+            lastAudioLogAt = now;
+          }
           live.sendAudioBase64(msg.data);
         }
         return;

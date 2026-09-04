@@ -156,6 +156,14 @@ function buildConfig(mode, model, targetLang) {
   };
 }
 
+function pickText(...candidates) {
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim()) return c;
+    if (c && typeof c.text === 'string' && c.text.trim()) return c.text;
+  }
+  return '';
+}
+
 function handleMessage(message, onEvent) {
   const sc = message?.serverContent;
   if (!sc) {
@@ -169,35 +177,59 @@ function handleMessage(message, onEvent) {
     onEvent({ type: 'interrupted' });
   }
 
-  // Interim (si el modelo lo envia)
-  const interimIn = sc.interimInputTranscription?.text;
+  // Interim (si el modelo lo envia) — also accept alternate field names
+  const interimIn = pickText(
+    sc.interimInputTranscription,
+    sc.interim_input_transcription,
+    message?.interimInputTranscription,
+    message?.inputAudioTranscription?.interim
+  );
   if (interimIn) {
     onEvent({ type: 'interim', role: 'original', text: interimIn });
   }
-  const interimOut = sc.interimOutputTranscription?.text;
+  const interimOut = pickText(
+    sc.interimOutputTranscription,
+    sc.interim_output_transcription,
+    message?.interimOutputTranscription,
+    message?.outputAudioTranscription?.interim
+  );
   if (interimOut) {
     onEvent({ type: 'interim', role: 'translation', text: interimOut });
   }
 
-  // Final / acumulado input = original
-  const inputText = sc.inputTranscription?.text;
+  // Final / acumulado input = original (+ alternate names e.g. inputAudioTranscription)
+  const inputObj =
+    sc.inputTranscription ||
+    sc.input_transcription ||
+    sc.inputAudioTranscription ||
+    sc.input_audio_transcription ||
+    message?.inputAudioTranscription ||
+    message?.inputTranscription;
+  const inputText = pickText(inputObj);
   if (inputText) {
     onEvent({
       type: 'transcript',
       role: 'original',
       text: inputText,
-      finished: Boolean(sc.turnComplete || sc.inputTranscription?.finished),
+      finished: Boolean(sc.turnComplete || inputObj?.finished),
     });
   }
 
   // Output transcription = traduccion (subtitulos)
-  const outputText = sc.outputTranscription?.text;
+  const outputObj =
+    sc.outputTranscription ||
+    sc.output_transcription ||
+    sc.outputAudioTranscription ||
+    sc.output_audio_transcription ||
+    message?.outputAudioTranscription ||
+    message?.outputTranscription;
+  const outputText = pickText(outputObj);
   if (outputText) {
     onEvent({
       type: 'transcript',
       role: 'translation',
       text: outputText,
-      finished: Boolean(sc.turnComplete || sc.outputTranscription?.finished),
+      finished: Boolean(sc.turnComplete || outputObj?.finished),
     });
   }
 

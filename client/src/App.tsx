@@ -76,8 +76,10 @@ function ControlPanel() {
   });
   const [voiceOptions, setVoiceOptions] = useState<SpeechSynthesisVoice[]>([]);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
+  const [noSubtitleHint, setNoSubtitleHint] = useState(false);
   const syncRef = useRef<ReturnType<typeof createSyncChannel> | null>(null);
   const lastAutoId = useRef<string | null>(null);
+  const listeningSinceRef = useRef<number | null>(null);
 
   const mode = useMemo(() => deriveMode(sourceLang, targetLang), [sourceLang, targetLang]);
 
@@ -216,6 +218,33 @@ function ControlPanel() {
       }
     }
   }, [tx.mode, tx.targetLang]);
+
+  // Soft hint: listening but no partial subtitles for 8s
+  useEffect(() => {
+    const active = tx.status === 'listening' || mic.capturing;
+    const hasPartial = Boolean(tx.partial.original || tx.partial.translation);
+    if (!active) {
+      listeningSinceRef.current = null;
+      setNoSubtitleHint(false);
+      return;
+    }
+    if (hasPartial) {
+      listeningSinceRef.current = null;
+      setNoSubtitleHint(false);
+      return;
+    }
+    if (listeningSinceRef.current == null) {
+      listeningSinceRef.current = Date.now();
+    }
+    const elapsed = Date.now() - listeningSinceRef.current;
+    const remain = Math.max(0, 8000 - elapsed);
+    const t = window.setTimeout(() => {
+      if (!(tx.partial.original || tx.partial.translation)) {
+        setNoSubtitleHint(true);
+      }
+    }, remain);
+    return () => window.clearTimeout(t);
+  }, [tx.status, mic.capturing, tx.partial.original, tx.partial.translation]);
 
   const deviceLabel = useMemo(() => {
     if (mic.permission === 'denied') return 'Micrófono denegado por el navegador';
@@ -446,6 +475,12 @@ function ControlPanel() {
             </div>
           ) : null}
 
+          {noSubtitleHint ? (
+            <div className="rounded-xl border border-sky-500/30 bg-sky-500/10 px-4 py-3 text-sm text-sky-100">
+              Hablando… si no aparece texto, prueba otro mic o Reconectar
+            </div>
+          ) : null}
+
           <div className="space-y-3">
             {allHistory.map((item) => (
               <HistoryCard
@@ -638,6 +673,9 @@ function ControlPanel() {
               <RefreshCw className="h-4 w-4" />
             </button>
           </div>
+          <p className="mt-2 text-xs text-acapomil-muted leading-relaxed">
+            iPhone: desbloqueado, cerca, Continuity Mic activado en Ajustes del Mac; pulsa refrescar.
+          </p>
         </section>
 
         <footer className="pt-4 pb-8 text-center text-xs text-acapomil-muted">

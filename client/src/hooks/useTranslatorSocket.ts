@@ -3,6 +3,7 @@ import type { AppStatus, HistoryItem, PartialSubtitles, ServerMessage, TargetLan
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_BASE_MS = 400;
+const MAX_AUDIO_BUFFER = 80; // ~8s of 100ms chunks
 
 function wsUrl() {
   // En desarrollo conectamos directo al backend (evita fallos del proxy WS de Vite)
@@ -28,6 +29,10 @@ export function useTranslatorSocket() {
   const failCount = useRef(0);
   const connectRef = useRef<() => void>(() => {});
 
+  // Buffer mic PCM until Gemini Live session is ready (listening/connected/setup_complete)
+  const liveReadyRef = useRef(false);
+  const audioQueueRef = useRef<string[]>([]);
+
   const clearReconnect = () => {
     if (reconnectTimer.current != null) {
       window.clearTimeout(reconnectTimer.current);
@@ -35,61 +40,92 @@ export function useTranslatorSocket() {
     }
   };
 
-  const handleServer = useCallback((msg: ServerMessage) => {
-    switch (msg.type) {
-      case 'status': {
-        if (typeof msg.hasApiKey === 'boolean') setHasApiKey(msg.hasApiKey);
-        if (msg.model) setModel(msg.model);
-        if (msg.mode === 'en-es' || msg.mode === 'es-en' || msg.mode === 'auto') {
-          setModeState(msg.mode);
-        }
-        if (msg.targetLang === 'en' || msg.targetLang === 'es') {
-          setTargetLangState(msg.targetLang);
-        }
-        const s = msg.status;
-        if (s === 'ready') {
-          setError(null);
-          setStatus('ready');
-        } else if (s === 'connecting' || s === 'reconnecting') setStatus('connecting');
-        else if (s === 'listening' || s === 'connected' || s === 'setup_complete') setStatus('listening');
-        else if (s === 'stopped') setStatus('stopped');
-        else if (s === 'disconnected') setStatus('disconnected');
-        if (msg.message) setError(msg.message);
-        break;
-      }
-      case 'error':
-        setError(msg.message || 'Error desconocido');
-        setStatus('error');
-        break;
-      case 'partial':
-      case 'interim':
-        setPartial((prev) => ({
-          original: msg.original ?? (msg.role === 'original' ? msg.text || prev.original : prev.original),
-          translation:
-            msg.translation ??
-            (msg.role === 'translation' ? msg.text || prev.translation : prev.translation),
-        }));
-        break;
-      case 'final': {
-        if (!msg.id) break;
-        const item: HistoryItem = {
-          id: msg.id,
-          original: msg.original || '',
-          translation: msg.translation || '',
-          mode: (msg.mode as TranslateMode) || 'en-es',
-          detectedLang: msg.detectedLang,
-          ts: msg.ts || new Date().toISOString(),
-        };
-        setHistory((h) => [item, ...h]);
-        setPartial({ original: '', translation: '' });
-        break;
-      }
-      case 'turn_complete':
-        break;
-      default:
-        break;
+  const flushAudioQueue = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const queued = audioQueueRef.current;
+    audioQueueRef.current = [];
+    for (const b64 of queued) {
+      ws.send(JSON.stringify({ type: 'audio', data: b64 }));
     }
   }, []);
+
+  const markLiveReady = useCallback(() => {
+    if (liveReadyRef.current) return;
+    liveReadyRef.current = true;
+    flushAudioQueue();
+  }, [flushAudioQueue]);
+
+  const handleServer = useCallback(
+    (msg: ServerMessage) => {
+      switch (msg.type) {
+        case 'status': {
+          if (typeof msg.hasApiKey === 'boolean') setHasApiKey(msg.hasApiKey);
+          if (msg.model) setModel(msg.model);
+          if (msg.mode === 'en-es' || msg.mode === 'es-en' || msg.mode === 'auto') {
+            setModeState(msg.mode);
+          }
+          if (msg.targetLang === 'en' || msg.targetLang === 'es') {
+            setTargetLangState(msg.targetLang);
+          }
+          const s = msg.status;
+          if (s === 'ready') {
+            setError(null);
+            setStatus('ready');
+          } else if (s === 'connecting' || s === 'reconnecting') {
+            setStatus('connecting');
+          } else if (s === 'listening' || s === 'connected' || s === 'setup_complete') {
+            setStatus('listening');
+            markLiveReady();
+          } else if (s === 'stopped') {
+            liveReadyRef.current = false;
+            audioQueueRef.current = [];
+            setStatus('stopped');
+          } else if (s === 'disconnected') {
+            liveReadyRef.current = false;
+            audioQueueRef.current = [];
+            setStatus('disconnected');
+          }
+          if (msg.message) setError(msg.message);
+          break;
+        }
+        case 'error':
+          liveReadyRef.current = false;
+          audioQueueRef.current = [];
+          setError(msg.message || 'Error desconocido');
+          setStatus('error');
+          break;
+        case 'partial':
+        case 'interim':
+          setPartial((prev) => ({
+            original: msg.original ?? (msg.role === 'original' ? msg.text || prev.original : prev.original),
+            translation:
+              msg.translation ??
+              (msg.role === 'translation' ? msg.text || prev.translation : prev.translation),
+          }));
+          break;
+        case 'final': {
+          if (!msg.id) break;
+          const item: HistoryItem = {
+            id: msg.id,
+            original: msg.original || '',
+            translation: msg.translation || '',
+            mode: (msg.mode as TranslateMode) || 'en-es',
+            detectedLang: msg.detectedLang,
+            ts: msg.ts || new Date().toISOString(),
+          };
+          setHistory((h) => [item, ...h]);
+          setPartial({ original: '', translation: '' });
+          break;
+        }
+        case 'turn_complete':
+          break;
+        default:
+          break;
+      }
+    },
+    [markLiveReady]
+  );
 
   const connect = useCallback(() => {
     if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
@@ -112,6 +148,8 @@ export function useTranslatorSocket() {
     };
     ws.onclose = () => {
       if (wsRef.current === ws) wsRef.current = null;
+      liveReadyRef.current = false;
+      audioQueueRef.current = [];
       // Intentional StrictMode / unmount close: do not flash disconnected
       if (intentionalClose.current) return;
 
@@ -164,6 +202,8 @@ export function useTranslatorSocket() {
     failCount.current = 0;
     setError(null);
     setStatus('connecting');
+    liveReadyRef.current = false;
+    audioQueueRef.current = [];
     clearReconnect();
     const existing = wsRef.current;
     if (existing) {
@@ -194,21 +234,35 @@ export function useTranslatorSocket() {
       setModeState(m);
       setTargetLangState(tLang);
       setStatus('connecting');
+      liveReadyRef.current = false;
+      audioQueueRef.current = [];
       sendJson({ type: 'start', mode: m, targetLang: tLang });
     },
     [sendJson]
   );
 
   const stopSession = useCallback(() => {
+    liveReadyRef.current = false;
+    audioQueueRef.current = [];
     sendJson({ type: 'stop' });
     setStatus('stopped');
   }, [sendJson]);
 
   const sendAudio = useCallback(
     (b64: string) => {
-      sendJson({ type: 'audio', data: b64 });
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+      if (!liveReadyRef.current) {
+        const q = audioQueueRef.current;
+        if (q.length >= MAX_AUDIO_BUFFER) q.shift();
+        q.push(b64);
+        return;
+      }
+
+      ws.send(JSON.stringify({ type: 'audio', data: b64 }));
     },
-    [sendJson]
+    []
   );
 
   const setMode = useCallback(
