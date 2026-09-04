@@ -1,17 +1,6 @@
-import { Volume2 } from 'lucide-react';
 import type { HistoryItem } from '../lib/types';
-import { langForTranslation } from '../lib/tts';
 
-export function HistoryCard({
-  item,
-  speakingId,
-  onSpeak,
-}: {
-  item: HistoryItem;
-  speakingId: string | null;
-  onSpeak: (item: HistoryItem) => void;
-}) {
-  const active = speakingId === item.id;
+export function HistoryCard({ item }: { item: HistoryItem }) {
   const time = new Date(item.ts).toLocaleTimeString('es-CL', {
     hour: '2-digit',
     minute: '2-digit',
@@ -21,11 +10,7 @@ export function HistoryCard({
     item.mode === 'en-es' ? 'EN→ES' : item.mode === 'es-en' ? 'ES→EN' : 'EN↔ES';
 
   return (
-    <article
-      className={`rounded-xl border bg-acapomil-card/90 p-4 md:p-5 transition ${
-        active ? 'listening-glow border-acapomil-green' : 'border-acapomil-border'
-      }`}
-    >
+    <article className="rounded-xl border border-acapomil-border bg-acapomil-card/90 p-4 md:p-5">
       <div className="mb-2 flex items-center justify-between gap-2 text-xs text-acapomil-muted">
         <span className="rounded-md bg-white/5 px-2 py-0.5 font-semibold text-sky-300">{badge}</span>
         <span>{time}</span>
@@ -35,22 +20,9 @@ export function HistoryCard({
         {item.original || '—'}
       </p>
       <p className="text-xs text-acapomil-green/80 mb-0.5">Traducción</p>
-      <p className="text-lg md:text-xl lg:text-2xl font-medium text-white mb-3 whitespace-pre-wrap break-words leading-relaxed">
+      <p className="text-lg md:text-xl lg:text-2xl font-medium text-white whitespace-pre-wrap break-words leading-relaxed">
         {item.translation || '—'}
       </p>
-      <button
-        type="button"
-        onClick={() => onSpeak(item)}
-        className={`inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium border ${
-          active
-            ? 'border-acapomil-green text-acapomil-green bg-emerald-500/10'
-            : 'border-white/10 text-gray-200 hover:bg-white/5'
-        }`}
-        title={`TTS ${langForTranslation(item.mode, item.detectedLang)}`}
-      >
-        <Volume2 className="h-4 w-4" />
-        Escuchar
-      </button>
     </article>
   );
 }

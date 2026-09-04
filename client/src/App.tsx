@@ -7,7 +7,6 @@ import {
   RefreshCw,
   Shield,
   Square,
-  Volume2,
 } from 'lucide-react';
 import { Crest } from './components/Crest';
 import { StatusPill } from './components/StatusPill';
@@ -16,28 +15,14 @@ import { useMicCapture } from './hooks/useMicCapture';
 import { useTranslatorSocket } from './hooks/useTranslatorSocket';
 import { createSyncChannel } from './lib/broadcast';
 import { useSubtitleDisplay } from './lib/subtitleDisplay';
-import type { HistoryItem, SourceLang, TargetLang } from './lib/types';
+import type { SourceLang, TargetLang } from './lib/types';
 import { deriveMode } from './lib/types';
-import {
-  formatVoiceOption,
-  isValidTranslationText,
-  langForTranslation,
-  normalizeSpeakText,
-  pickVoice,
-  shouldSkipDuplicateSpeak,
-  shouldWaitForRealTranslation,
-  speakText,
-  stopSpeaking,
-  voicesForLang,
-  waitForVoices,
-} from './lib/tts';
+import { isValidTranslationText, stopSpeaking } from './lib/tts';
 
 function isProjectionRoute() {
   const q = new URLSearchParams(window.location.search);
   return window.location.pathname.includes('projection') || q.get('mode') === 'projection';
 }
-
-const VOICE_URI_KEY = 'acapomil-tts-voice-uri';
 
 const SOURCE_OPTIONS: { value: SourceLang; label: string }[] = [
   { value: 'auto', label: 'Conversación (EN ↔ ES)' },
@@ -60,20 +45,7 @@ function ControlPanel() {
   const tx = useTranslatorSocket();
   const [sourceLang, setSourceLang] = useState<SourceLang>('auto');
   const [targetLang, setTargetLang] = useState<TargetLang>('es');
-  const [autoVoice, setAutoVoice] = useState(true);
-  const [voiceLang, setVoiceLang] = useState('es-CL');
-  const [voiceURI, setVoiceURI] = useState<string>(() => {
-    try {
-      return localStorage.getItem(VOICE_URI_KEY) || '';
-    } catch {
-      return '';
-    }
-  });
-  const [voiceOptions, setVoiceOptions] = useState<SpeechSynthesisVoice[]>([]);
-  const [speakingId, setSpeakingId] = useState<string | null>(null);
   const syncRef = useRef<ReturnType<typeof createSyncChannel> | null>(null);
-  const lastAutoId = useRef<string | null>(null);
-  const lastSpokenRef = useRef('');
 
   const mode = useMemo(() => deriveMode(sourceLang, targetLang), [sourceLang, targetLang]);
 
@@ -113,51 +85,6 @@ function ControlPanel() {
     applyLangPair(newSource, newTarget);
   };
 
-  const refreshVoiceList = (lang: string, preferred?: string) => {
-    const ranked = voicesForLang(lang);
-    setVoiceOptions(ranked);
-    const pref = preferred ?? voiceURI;
-    if (pref && ranked.some((v) => v.voiceURI === pref)) {
-      setVoiceURI(pref);
-      return;
-    }
-    const best = pickVoice(lang, pref || null);
-    if (best) {
-      setVoiceURI(best.voiceURI);
-      try {
-        localStorage.setItem(VOICE_URI_KEY, best.voiceURI);
-      } catch {
-        /* ignore */
-      }
-    } else {
-      setVoiceURI('');
-    }
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-    const boot = async () => {
-      await waitForVoices();
-      if (cancelled) return;
-      const lang = langForTranslation(mode, undefined, targetLang);
-      setVoiceLang(lang);
-      refreshVoiceList(lang);
-    };
-    void boot();
-
-    const s = window.speechSynthesis;
-    const onChange = () => {
-      if (cancelled) return;
-      refreshVoiceList(voiceLang || langForTranslation(mode, undefined, targetLang));
-    };
-    s?.addEventListener?.('voiceschanged', onChange);
-    return () => {
-      cancelled = true;
-      s?.removeEventListener?.('voiceschanged', onChange);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   useEffect(() => {
     syncRef.current = createSyncChannel((msg) => {
       if (msg.kind === 'ping') {
@@ -184,21 +111,7 @@ function ControlPanel() {
     const newest = tx.history[0];
     if (!newest) return;
     syncRef.current?.post({ kind: 'final', item: newest });
-    if (newest.id === lastAutoId.current) return;
-    if (!newest.translation?.trim()) return;
-    if (!isValidTranslationText(newest.translation)) return;
-    if (!autoVoice) return;
-    lastAutoId.current = newest.id;
-    speakItem(newest);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tx.history, autoVoice]);
-
-  useEffect(() => {
-    const lang = langForTranslation(mode, undefined, targetLang);
-    setVoiceLang(lang);
-    refreshVoiceList(lang);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, targetLang]);
+  }, [tx.history]);
 
   useEffect(() => {
     if (tx.mode === 'en-es') {
@@ -229,34 +142,6 @@ function ControlPanel() {
     window.open(url, 'traductor-acapomil-projection', 'noopener,noreferrer');
   };
 
-  const speakItem = (item: HistoryItem) => {
-    const translation = item.translation?.trim();
-    if (!translation) return;
-    if (!isValidTranslationText(translation)) return;
-    if (shouldWaitForRealTranslation(item.mode, item.original, translation, targetLang)) {
-      return;
-    }
-    if (
-      shouldSkipDuplicateSpeak(translation, lastSpokenRef.current, {
-        isFinal: true,
-      })
-    ) {
-      return;
-    }
-    const lang = langForTranslation(item.mode, item.detectedLang, targetLang);
-    setVoiceLang(lang);
-    setSpeakingId(item.id);
-    lastSpokenRef.current = normalizeSpeakText(translation);
-    syncRef.current?.post({ kind: 'speak', text: translation, lang, id: item.id });
-    speakText(
-      translation,
-      lang,
-      () => setSpeakingId(item.id),
-      () => setSpeakingId(null),
-      voiceURI || null
-    );
-  };
-
   const onStart = async () => {
     tx.setError(null);
     if (mic.permission !== 'granted') {
@@ -278,19 +163,8 @@ function ControlPanel() {
   const onStop = () => {
     mic.stop();
     tx.stopSession();
-    stopSpeaking();
-    setSpeakingId(null);
-    lastSpokenRef.current = '';
+    stopSpeaking(); // safety cancel if any leftover TTS
     syncRef.current?.post({ kind: 'speak_stop' });
-  };
-
-  const onVoiceSelect = (uri: string) => {
-    setVoiceURI(uri);
-    try {
-      localStorage.setItem(VOICE_URI_KEY, uri);
-    } catch {
-      /* ignore */
-    }
   };
 
   const listening = tx.status === 'listening' || mic.capturing;
@@ -300,7 +174,7 @@ function ControlPanel() {
       ? `CONVERSACIÓN EN ↔ ES · audiencia ${targetLang === 'es' ? 'ES' : 'EN'}`
       : `${sourceLang === 'es' ? 'ES' : 'EN'} → ${targetLang === 'es' ? 'ES' : 'EN'} (un sentido)`;
 
-  // Live hero only — history kept in memory for sync/TTS, not rendered
+  // Live hero only — history kept in memory for sync, not rendered
   const liveOriginal = tx.partial.original || tx.history[0]?.original || '';
   const rawLiveTranslation = tx.partial.translation || tx.history[0]?.translation || '';
   const liveTranslation = isValidTranslationText(rawLiveTranslation) ? rawLiveTranslation : '';
@@ -355,11 +229,9 @@ function ControlPanel() {
 
           <article
             className={`relative w-full min-h-[40vh] md:min-h-[44vh] rounded-2xl border overflow-hidden flex flex-col ${
-              speakingId
-                ? 'listening-glow border-acapomil-green'
-                : tx.partial.original || liveTranslation || tx.history[0]
-                  ? 'border-sky-500/40'
-                  : 'border-acapomil-border'
+              tx.partial.original || liveTranslation || tx.history[0]
+                ? 'border-sky-500/40'
+                : 'border-acapomil-border'
             }`}
           >
             <div className="absolute inset-0 bg-gradient-to-b from-[#0a0e14] via-[#0d1118] to-[#080b10]" />
@@ -482,40 +354,6 @@ function ControlPanel() {
                 <> · solo un sentido</>
               )}
             </p>
-          </div>
-
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 rounded-xl border border-acapomil-border bg-[#0d1118] px-3 py-3">
-            <button
-              type="button"
-              onClick={() => setAutoVoice(!autoVoice)}
-              className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium shrink-0 ${
-                autoVoice
-                  ? 'border-acapomil-green/50 text-acapomil-green'
-                  : 'border-white/10 text-acapomil-muted'
-              }`}
-              title="Única ruta de voz continua: lee en voz alta cada traducción final"
-            >
-              <Volume2 className="h-4 w-4" />
-              VOZ AUTOMÁTICA: {autoVoice ? 'ACTIVADA' : 'DESACTIVADA'}
-            </button>
-            <label className="flex flex-col sm:flex-row sm:items-center gap-2 text-sm text-acapomil-muted min-w-0 flex-1">
-              <span className="shrink-0">Voz TTS:</span>
-              <select
-                className="w-full min-w-0 rounded-lg border border-acapomil-border bg-acapomil-card px-2 py-1.5 text-white text-sm"
-                value={voiceURI}
-                onChange={(e) => onVoiceSelect(e.target.value)}
-              >
-                {voiceOptions.length === 0 ? (
-                  <option value="">Cargando voces del sistema…</option>
-                ) : (
-                  voiceOptions.map((v) => (
-                    <option key={v.voiceURI} value={v.voiceURI}>
-                      {formatVoiceOption(v)}
-                    </option>
-                  ))
-                )}
-              </select>
-            </label>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

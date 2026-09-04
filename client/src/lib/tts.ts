@@ -442,9 +442,23 @@ export function stopSpeaking() {
 
 
 
-/** Reject language-code / nonsense translations (never display or TTS). */
+/** Reject language-code / nonsense translations (never display). */
 const INVALID_TRANSLATION_RE =
   /^(es|en|esp|ing|spa|eng|es-es|en-us|en-gb|español|espanol|english|ingles|inglés)$/i;
+
+/** Cyrillic, Arabic, Devanagari, CJK, Hangul — not EN/ES script. */
+const NON_LATIN_SCRIPT_RE =
+  /[\u0400-\u04FF\u0600-\u06FF\u0900-\u097F\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF]/g;
+
+/** Light filter: EN↔ES subtitles should be Latin (+ accents), not Korean/CJK/etc. */
+function looksLikeEnEsScript(text: string): boolean {
+  const nonLatin = text.match(NON_LATIN_SCRIPT_RE);
+  if (!nonLatin || nonLatin.length === 0) return true;
+  const latinLetters = (text.match(/[A-Za-zÀ-ÿ\u00C0-\u024F]/g) || []).length;
+  // Reject when non-Latin characters dominate (e.g. Hangul while in EN↔ES mode)
+  if (nonLatin.length >= 2 && nonLatin.length > latinLetters) return false;
+  return true;
+}
 
 export function isValidTranslationText(text: string | undefined | null): boolean {
   if (typeof text !== 'string') return false;
@@ -458,6 +472,7 @@ export function isValidTranslationText(text: string | undefined | null): boolean
   ) {
     return false;
   }
+  if (!looksLikeEnEsScript(t)) return false;
   return true;
 }
 

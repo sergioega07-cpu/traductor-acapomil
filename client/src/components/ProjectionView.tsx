@@ -1,20 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Volume2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { Crest } from './Crest';
 import { StatusPill } from './StatusPill';
 import { createSyncChannel, type SyncMessage } from '../lib/broadcast';
 import type { AppStatus, HistoryItem, PartialSubtitles, TranslateMode } from '../lib/types';
 import { useSubtitleDisplay } from '../lib/subtitleDisplay';
-import {
-  langForTranslation,
-  normalizeSpeakText,
-  isValidTranslationText,
-  shouldSkipDuplicateSpeak,
-  shouldWaitForRealTranslation,
-  speakText,
-  stopSpeaking,
-  waitForVoices,
-} from '../lib/tts';
+import { isValidTranslationText, stopSpeaking } from '../lib/tts';
 
 function targetLabel(mode: TranslateMode, detected?: string) {
   if (mode === 'en-es') return 'EN→ES (un sentido)';
@@ -29,18 +19,8 @@ export function ProjectionView() {
   const [mode, setMode] = useState<TranslateMode>('auto');
   const [partial, setPartial] = useState<PartialSubtitles>({ original: '', translation: '' });
   const [latest, setLatest] = useState<HistoryItem | null>(null);
-  const [speaking, setSpeaking] = useState(false);
 
   const channelRef = useRef<ReturnType<typeof createSyncChannel> | null>(null);
-  const lastSpokenRef = useRef('');
-  const modeRef = useRef(mode);
-  const latestRef = useRef(latest);
-  modeRef.current = mode;
-  latestRef.current = latest;
-
-  useEffect(() => {
-    void waitForVoices();
-  }, []);
 
   useEffect(() => {
     const channel = createSyncChannel((msg: SyncMessage) => {
@@ -57,20 +37,10 @@ export function ProjectionView() {
       } else if (msg.kind === 'clear') {
         setPartial({ original: '', translation: '' });
         setLatest(null);
-      } else if (msg.kind === 'speak') {
-        // One-shot from control (Voz automática)
-        const t = msg.text?.trim();
-        if (!t || !isValidTranslationText(t)) return;
-        if (shouldSkipDuplicateSpeak(t, lastSpokenRef.current, { isFinal: true })) {
-          return;
-        }
-        lastSpokenRef.current = normalizeSpeakText(t);
-        speakText(t, msg.lang, () => setSpeaking(true), () => setSpeaking(false));
       } else if (msg.kind === 'speak_stop') {
-        stopSpeaking();
-        setSpeaking(false);
-        lastSpokenRef.current = '';
+        stopSpeaking(); // safety cancel only — projection never speaks
       }
+      // ignore 'speak' — subtitles only, no TTS
     });
     channelRef.current = channel;
     channel.post({ kind: 'ping' });
@@ -86,33 +56,6 @@ export function ProjectionView() {
   const display = useSubtitleDisplay(liveOriginal, liveTranslation);
   const detected = latest?.detectedLang;
   const live = status === 'listening';
-
-  const speakOnce = () => {
-    const text = display.hasRealTranslation
-      ? display.largeText
-      : (liveTranslation || '').trim();
-    if (!text || text === 'traduciendo…' || !isValidTranslationText(text)) return;
-    if (
-      shouldWaitForRealTranslation(
-        modeRef.current,
-        liveOriginal,
-        liveTranslation || text
-      )
-    ) {
-      // Still pending a real translation — don't speak echo of original as translation
-      if (!display.hasRealTranslation) return;
-    }
-    if (shouldSkipDuplicateSpeak(text, lastSpokenRef.current, { isFinal: true })) {
-      return;
-    }
-    const lang = langForTranslation(modeRef.current, latestRef.current?.detectedLang);
-    lastSpokenRef.current = normalizeSpeakText(text);
-    speakText(text, lang, () => setSpeaking(true), () => setSpeaking(false));
-  };
-
-  const canListen = useMemo(() => {
-    return Boolean(display.hasRealTranslation || (liveTranslation.trim() && display.largeText && display.largeText !== 'traduciendo…'));
-  }, [display, liveTranslation]);
 
   return (
     <div className="min-h-screen bg-black text-white flex flex-col">
@@ -191,21 +134,6 @@ export function ProjectionView() {
               </p>
             </div>
           )}
-
-          <button
-            type="button"
-            onClick={speakOnce}
-            disabled={!canListen}
-            className={`mt-6 md:mt-8 inline-flex items-center gap-2 rounded-xl border px-5 py-3 text-sm md:text-base font-semibold transition disabled:opacity-40 ${
-              speaking
-                ? 'listening-glow border-acapomil-green text-acapomil-green'
-                : 'border-white/20 text-white hover:bg-white/5'
-            }`}
-            title="Reproduce una vez el subtítulo actual (la voz continua se controla con Voz automática en el panel)"
-          >
-            <Volume2 className="h-5 w-5" />
-            Escuchar
-          </button>
         </div>
       </main>
 
