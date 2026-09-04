@@ -477,17 +477,19 @@ export function shouldSkipDuplicateSpeak(
   return false;
 }
 
-/** en-es (or auto→es): translation still mirrors English original — wait for Spanish. */
+/** Wait (do not speak) while translation is missing or still mirrors the original. */
 export function shouldWaitForRealTranslation(
   mode: string,
   original: string | undefined,
   translation: string | undefined,
-  targetLang?: string
+  _targetLang?: string
 ): boolean {
-  if (!original?.trim() || !translation?.trim()) return false;
-  if (!textsLookIdentical(original, translation)) return false;
-  if (mode === 'en-es') return true;
-  if (mode === 'auto' && targetLang === 'es') return true;
+  const o = original?.trim();
+  const t = translation?.trim();
+  if (!t) return true; // nothing to speak yet
+  if (o && textsLookIdentical(o, t)) return true; // still echoing source
+  // Speak only when translation clearly differs from original
+  void mode;
   return false;
 }
 
@@ -501,12 +503,15 @@ export function langForTranslation(
   detected?: string,
   targetLang?: string
 ): string {
-  if (targetLang === 'en') return 'en-US';
-  if (targetLang === 'es') return 'es-CL';
+  // Forced one-way modes: TTS is always the fixed target
   if (mode === 'en-es') return 'es-CL';
   if (mode === 'es-en') return 'en-US';
+  // Conversación / auto: speak the OTHER language from what was heard
   if (detected === 'en') return 'es-CL';
   if (detected === 'es') return 'en-US';
+  // Ambiguous: audience bias from UI target
+  if (targetLang === 'en') return 'en-US';
+  if (targetLang === 'es') return 'es-CL';
   return 'es-CL';
 }
 

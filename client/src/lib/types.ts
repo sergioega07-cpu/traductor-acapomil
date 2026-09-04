@@ -1,6 +1,6 @@
 export type TranslateMode = 'en-es' | 'es-en' | 'auto';
 
-/** Idioma de origen en el selector estilo Google Translate */
+/** Idioma de origen: auto = Conversación EN↔ES; en/es = solo un sentido */
 export type SourceLang = 'auto' | 'es' | 'en';
 
 /** Idioma de destino (solo EN/ES) */

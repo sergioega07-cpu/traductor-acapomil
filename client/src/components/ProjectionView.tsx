@@ -4,6 +4,7 @@ import { Crest } from './Crest';
 import { StatusPill } from './StatusPill';
 import { createSyncChannel, type SyncMessage } from '../lib/broadcast';
 import type { AppStatus, HistoryItem, PartialSubtitles, TranslateMode } from '../lib/types';
+import { useSubtitleDisplay } from '../lib/subtitleDisplay';
 import {
   langForTranslation,
   normalizeSpeakText,
@@ -11,64 +12,34 @@ import {
   shouldWaitForRealTranslation,
   speakText,
   stopSpeaking,
-  textsLookIdentical,
-  isSpeaking,
   waitForVoices,
 } from '../lib/tts';
 
 function targetLabel(mode: TranslateMode, detected?: string) {
-  if (mode === 'en-es') return 'ESPANOL';
-  if (mode === 'es-en') return 'INGLES';
-  if (detected === 'en') return 'ESPANOL';
-  if (detected === 'es') return 'INGLES';
-  return 'AUTO';
+  if (mode === 'en-es') return 'EN→ES (un sentido)';
+  if (mode === 'es-en') return 'ES→EN (un sentido)';
+  if (detected === 'en') return 'EN→ES';
+  if (detected === 'es') return 'ES→EN';
+  return 'CONVERSACIÓN EN↔ES';
 }
 
 export function ProjectionView() {
   const [status, setStatus] = useState<AppStatus>('idle');
-  const [mode, setMode] = useState<TranslateMode>('en-es');
+  const [mode, setMode] = useState<TranslateMode>('auto');
   const [partial, setPartial] = useState<PartialSubtitles>({ original: '', translation: '' });
   const [latest, setLatest] = useState<HistoryItem | null>(null);
   const [speaking, setSpeaking] = useState(false);
-  const [followSpeak, setFollowSpeak] = useState(false);
 
   const channelRef = useRef<ReturnType<typeof createSyncChannel> | null>(null);
-  const followSpeakRef = useRef(false);
-  const followDebounceRef = useRef<number | null>(null);
-  const lastFollowSpokenRef = useRef('');
+  const lastSpokenRef = useRef('');
   const modeRef = useRef(mode);
   const latestRef = useRef(latest);
-  followSpeakRef.current = followSpeak;
   modeRef.current = mode;
   latestRef.current = latest;
 
   useEffect(() => {
     void waitForVoices();
   }, []);
-
-  const clearFollowDebounce = () => {
-    if (followDebounceRef.current != null) {
-      window.clearTimeout(followDebounceRef.current);
-      followDebounceRef.current = null;
-    }
-  };
-
-  const stopFollowSpeaking = () => {
-    clearFollowDebounce();
-    stopSpeaking();
-    setSpeaking(false);
-    lastFollowSpokenRef.current = '';
-  };
-
-  const applyFollowSpeak = (on: boolean, broadcast: boolean) => {
-    setFollowSpeak(on);
-    followSpeakRef.current = on;
-    if (!on) stopFollowSpeaking();
-    if (broadcast) {
-      channelRef.current?.post({ kind: 'speak_follow', on });
-      if (!on) channelRef.current?.post({ kind: 'speak_stop' });
-    }
-  };
 
   useEffect(() => {
     const channel = createSyncChannel((msg: SyncMessage) => {
@@ -86,133 +57,60 @@ export function ProjectionView() {
         setPartial({ original: '', translation: '' });
         setLatest(null);
       } else if (msg.kind === 'speak') {
-        // One-shot from control (history cards / auto-voice). Sticky follow speaks locally.
-        if (followSpeakRef.current) return;
+        // One-shot from control (Voz automática / historial)
         const t = msg.text?.trim();
         if (!t) return;
-        if (
-          shouldSkipDuplicateSpeak(t, lastFollowSpokenRef.current, { isFinal: true })
-        ) {
+        if (shouldSkipDuplicateSpeak(t, lastSpokenRef.current, { isFinal: true })) {
           return;
         }
-        lastFollowSpokenRef.current = normalizeSpeakText(t);
+        lastSpokenRef.current = normalizeSpeakText(t);
         speakText(t, msg.lang, () => setSpeaking(true), () => setSpeaking(false));
       } else if (msg.kind === 'speak_stop') {
-        stopFollowSpeaking();
-        if (followSpeakRef.current) {
-          setFollowSpeak(false);
-          followSpeakRef.current = false;
-        }
-      } else if (msg.kind === 'speak_follow') {
-        applyFollowSpeak(msg.on, false);
+        stopSpeaking();
+        setSpeaking(false);
+        lastSpokenRef.current = '';
       }
     });
     channelRef.current = channel;
     channel.post({ kind: 'ping' });
     return () => {
-      clearFollowDebounce();
       channel.close();
       channelRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const display = useMemo(() => {
-    if (partial.translation?.trim()) return partial.translation.trim();
-    if (latest?.translation?.trim()) return latest.translation.trim();
-    return '';
-  }, [partial, latest]);
-
-  const original = partial.original || latest?.original || '';
+  const liveOriginal = partial.original || latest?.original || '';
+  const liveTranslation = partial.translation || latest?.translation || '';
+  const display = useSubtitleDisplay(liveOriginal, liveTranslation);
   const detected = latest?.detectedLang;
   const live = status === 'listening';
 
-  const speakFollowLatest = (
-    text: string,
-    immediate: boolean,
-    opts?: { isFinal?: boolean; original?: string }
-  ) => {
-    const t = text.trim();
-    if (!t || !followSpeakRef.current) return;
-
+  const speakOnce = () => {
+    const text = display.hasRealTranslation
+      ? display.largeText
+      : (liveTranslation || liveOriginal || '').trim();
+    if (!text || text === 'traduciendo…') return;
     if (
-      shouldWaitForRealTranslation(modeRef.current, opts?.original, t)
+      shouldWaitForRealTranslation(
+        modeRef.current,
+        liveOriginal,
+        liveTranslation || text
+      )
     ) {
+      // Still pending a real translation — don't speak echo of original as translation
+      if (!display.hasRealTranslation) return;
+    }
+    if (shouldSkipDuplicateSpeak(text, lastSpokenRef.current, { isFinal: true })) {
       return;
     }
-
-    if (
-      shouldSkipDuplicateSpeak(t, lastFollowSpokenRef.current, {
-        midSpeak: isSpeaking() || speaking,
-        isFinal: opts?.isFinal,
-      })
-    ) {
-      return;
-    }
-
-    const run = () => {
-      if (!followSpeakRef.current) return;
-      if (shouldWaitForRealTranslation(modeRef.current, opts?.original, t)) {
-        return;
-      }
-      if (
-        shouldSkipDuplicateSpeak(t, lastFollowSpokenRef.current, {
-          midSpeak: true,
-          isFinal: opts?.isFinal,
-        })
-      ) {
-        return;
-      }
-      lastFollowSpokenRef.current = normalizeSpeakText(t);
-      const lang = langForTranslation(modeRef.current, latestRef.current?.detectedLang);
-      // speakText cancels queue before starting
-      speakText(t, lang, () => setSpeaking(true), () => setSpeaking(false));
-    };
-
-    clearFollowDebounce();
-    if (immediate) run();
-    else followDebounceRef.current = window.setTimeout(run, 500);
+    const lang = langForTranslation(modeRef.current, latestRef.current?.detectedLang);
+    lastSpokenRef.current = normalizeSpeakText(text);
+    speakText(text, lang, () => setSpeaking(true), () => setSpeaking(false));
   };
 
-  // When sticky turns ON, speak current caption once (translation only)
-  const wasFollowSpeakRef = useRef(false);
-  useEffect(() => {
-    if (followSpeak && !wasFollowSpeakRef.current) {
-      const translation = (partial.translation || latest?.translation || '').trim();
-      const original = (partial.original || latest?.original || '').trim();
-      if (translation) {
-        lastFollowSpokenRef.current = '';
-        speakFollowLatest(translation, true, { isFinal: true, original });
-      }
-    }
-    wasFollowSpeakRef.current = followSpeak;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [followSpeak]);
-
-  // Sticky: only translation field; never speak original if translation empty
-  useEffect(() => {
-    if (!followSpeak) return;
-    const partialTx = partial.translation?.trim() ?? '';
-    const translation =
-      partialTx ||
-      (!partial.original?.trim() ? latest?.translation?.trim() ?? '' : '');
-    if (!translation) return;
-    const isPartial = Boolean(partial.translation?.trim());
-    const original = partial.original || latest?.original || '';
-    speakFollowLatest(translation, !isPartial, {
-      isFinal: !isPartial,
-      original,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [display, followSpeak, partial.translation]);
-
-  const toggleFollowSpeak = () => {
-    if (followSpeak) {
-      applyFollowSpeak(false, true);
-      return;
-    }
-    applyFollowSpeak(true, true);
-  };
+  const canListen = useMemo(() => {
+    return Boolean(display.hasRealTranslation || (liveTranslation.trim() && display.largeText && display.largeText !== 'traduciendo…'));
+  }, [display, liveTranslation]);
 
   return (
     <div className="min-h-screen bg-black text-white flex flex-col">
@@ -228,11 +126,9 @@ export function ProjectionView() {
         </div>
       </header>
 
-      {/* Cinema stage: most of the screen is empty dark; captions sit in the bottom third */}
       <main className="relative flex-1 flex flex-col w-full min-h-0">
         <div className="absolute inset-0 bg-gradient-to-b from-black via-[#05070a] to-black" />
 
-        {/* Status ribbon — top of stage */}
         <div className="relative z-10 flex items-center justify-center pt-6 md:pt-8 px-6">
           <p
             className={`text-sm md:text-base font-semibold tracking-wide ${
@@ -241,61 +137,44 @@ export function ProjectionView() {
           >
             <span className="inline-block h-2 w-2 rounded-full mr-2 align-middle bg-current" />
             {live
-              ? `TRADUCCION EN VIVO (${targetLabel(mode, detected)})`
+              ? `TRADUCCIÓN EN VIVO (${targetLabel(mode, detected)})`
               : `EN ESPERA — SALIDA (${targetLabel(mode, detected)})`}
           </p>
         </div>
 
-        {/* Spacer — keeps captions in the lower third like movie subtitles */}
         <div className="relative z-10 flex-1 min-h-[18vh] md:min-h-[22vh]" />
 
-        {/* Bottom-third movie subtitle block */}
         <div className="relative z-10 flex flex-col items-center justify-end px-5 sm:px-10 lg:px-16 pb-8 md:pb-12 lg:pb-14 w-full">
-          {display || original ? (
+          {display.largeText || liveOriginal ? (
             <div className="w-full max-w-6xl xl:max-w-7xl mx-auto text-center">
-              {(() => {
-                const identical =
-                  Boolean(original.trim()) &&
-                  Boolean(display.trim()) &&
-                  textsLookIdentical(original, display);
-                return (
-                  <>
-                    {original && !identical ? (
-                      <p
-                        className="mb-3 md:mb-5 text-gray-400/85 whitespace-pre-wrap break-words leading-relaxed drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]"
-                        style={{
-                          fontSize: 'clamp(1rem, 1.6vw + 0.35rem, 1.55rem)',
-                        }}
-                      >
-                        {original}
-                      </p>
-                    ) : original && identical ? (
-                      <p
-                        className="mb-3 md:mb-5 text-gray-400/85 whitespace-pre-wrap break-words leading-relaxed drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]"
-                        style={{
-                          fontSize: 'clamp(1rem, 1.6vw + 0.35rem, 1.55rem)',
-                        }}
-                      >
-                        {original}
-                        <span className="ml-2 text-sky-400/80 font-medium normal-case tracking-normal">
-                          · traduciendo…
-                        </span>
-                      </p>
-                    ) : null}
-                    <div className="rounded-2xl bg-black/70 backdrop-blur-sm border border-white/10 px-5 py-6 sm:px-8 sm:py-8 md:px-12 md:py-10 shadow-[0_12px_60px_rgba(0,0,0,0.65)]">
-                      <p
-                        className="font-semibold text-white whitespace-pre-wrap break-words drop-shadow-[0_2px_12px_rgba(0,0,0,0.85)]"
-                        style={{
-                          fontSize: 'clamp(2rem, 5vw + 0.25rem, 4.75rem)',
-                          lineHeight: 1.3,
-                        }}
-                      >
-                        {identical ? 'traduciendo…' : display || '…'}
-                      </p>
-                    </div>
-                  </>
-                );
-              })()}
+              {display.originalLine ? (
+                <p
+                  className="mb-3 md:mb-5 text-gray-400/85 whitespace-pre-wrap break-words leading-relaxed drop-shadow-[0_2px_8px_rgba(0,0,0,0.9)]"
+                  style={{
+                    fontSize: 'clamp(1rem, 1.6vw + 0.35rem, 1.55rem)',
+                  }}
+                >
+                  {display.originalLine}
+                  {display.showTranslatingBadge ? (
+                    <span className="ml-2 text-sky-400/80 font-medium normal-case tracking-normal text-sm">
+                      · traduciendo…
+                    </span>
+                  ) : null}
+                </p>
+              ) : display.showTranslatingBadge ? (
+                <p className="mb-3 md:mb-5 text-sky-400/80 text-sm font-medium">traduciendo…</p>
+              ) : null}
+              <div className="rounded-2xl bg-black/70 backdrop-blur-sm border border-white/10 px-5 py-6 sm:px-8 sm:py-8 md:px-12 md:py-10 shadow-[0_12px_60px_rgba(0,0,0,0.65)]">
+                <p
+                  className="font-semibold text-white whitespace-pre-wrap break-words drop-shadow-[0_2px_12px_rgba(0,0,0,0.85)]"
+                  style={{
+                    fontSize: 'clamp(2rem, 5vw + 0.25rem, 4.75rem)',
+                    lineHeight: 1.3,
+                  }}
+                >
+                  {display.largeText || '…'}
+                </p>
+              </div>
             </div>
           ) : (
             <div className="w-full max-w-5xl mx-auto text-center rounded-2xl bg-black/50 border border-white/10 px-6 py-14 md:py-20">
@@ -303,32 +182,33 @@ export function ProjectionView() {
                 className="font-semibold text-gray-400 tracking-wide break-words"
                 style={{ fontSize: 'clamp(1.75rem, 4vw + 0.5rem, 3.5rem)' }}
               >
-                ESPERANDO ALOCUCION...
+                ESPERANDO ALOCUCIÓN...
               </p>
               <p className="mt-4 text-acapomil-muted text-base md:text-lg">
-                La traduccion aparecera automaticamente en pantalla
+                La traducción aparecerá automáticamente en pantalla
               </p>
             </div>
           )}
 
           <button
             type="button"
-            onClick={toggleFollowSpeak}
-            disabled={!followSpeak && !display}
+            onClick={speakOnce}
+            disabled={!canListen}
             className={`mt-6 md:mt-8 inline-flex items-center gap-2 rounded-xl border px-5 py-3 text-sm md:text-base font-semibold transition disabled:opacity-40 ${
-              followSpeak || speaking
+              speaking
                 ? 'listening-glow border-acapomil-green text-acapomil-green'
                 : 'border-white/20 text-white hover:bg-white/5'
             }`}
+            title="Reproduce una vez el subtítulo actual (la voz continua se controla con Voz automática en el panel)"
           >
             <Volume2 className="h-5 w-5" />
-            {followSpeak ? 'Cancelar escucha' : 'Escuchar subtítulo'}
+            Escuchar
           </button>
         </div>
       </main>
 
       <footer className="flex items-center justify-between px-6 md:px-10 py-3 border-t border-white/10 text-xs tracking-[0.2em] text-acapomil-muted uppercase shrink-0">
-        <span>Traduccion simultanea en vivo</span>
+        <span>Traducción simultánea en vivo</span>
         <span>Salida principal</span>
       </footer>
     </div>

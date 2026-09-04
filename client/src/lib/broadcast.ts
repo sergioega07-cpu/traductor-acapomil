@@ -10,7 +10,6 @@ export type SyncMessage =
   | { kind: 'clear' }
   | { kind: 'speak'; text: string; lang: string; id?: string }
   | { kind: 'speak_stop' }
-  | { kind: 'speak_follow'; on: boolean }
   | { kind: 'ping' };
 
 export function createSyncChannel(onMessage: (msg: SyncMessage) => void) {

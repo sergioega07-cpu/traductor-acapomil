@@ -18,7 +18,7 @@ export function HistoryCard({
     second: '2-digit',
   });
   const badge =
-    item.mode === 'en-es' ? 'EN→ES' : item.mode === 'es-en' ? 'ES→EN' : 'AUTO';
+    item.mode === 'en-es' ? 'EN→ES' : item.mode === 'es-en' ? 'ES→EN' : 'EN↔ES';
 
   return (
     <article

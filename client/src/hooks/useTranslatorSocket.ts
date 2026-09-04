@@ -22,7 +22,7 @@ export function useTranslatorSocket() {
   const [model, setModel] = useState<string | null>(null);
   const [partial, setPartial] = useState<PartialSubtitles>({ original: '', translation: '' });
   const [history, setHistory] = useState<HistoryItem[]>([]);
-  const [mode, setModeState] = useState<TranslateMode>('en-es');
+  const [mode, setModeState] = useState<TranslateMode>('auto');
   const [targetLang, setTargetLangState] = useState<TargetLang>('es');
   const intentionalClose = useRef(false);
   const reconnectTimer = useRef<number | null>(null);
@@ -110,7 +110,7 @@ export function useTranslatorSocket() {
             id: msg.id,
             original: msg.original || '',
             translation: msg.translation || '',
-            mode: (msg.mode as TranslateMode) || 'en-es',
+            mode: (msg.mode as TranslateMode) || 'auto',
             detectedLang: msg.detectedLang,
             ts: msg.ts || new Date().toISOString(),
           };

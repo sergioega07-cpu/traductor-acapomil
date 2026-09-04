@@ -45,7 +45,7 @@ function send(ws, payload) {
 
 wss.on('connection', (ws) => {
   let live = null;
-  let mode = 'en-es';
+  let mode = 'auto';
   let targetLang = 'es';
   let originalBuf = '';
   let translationBuf = '';
@@ -237,8 +237,8 @@ wss.on('connection', (ws) => {
 
 function normalizeMode(mode) {
   if (mode === 'es-en' || mode === 'es→en' || mode === 'ES_EN') return 'es-en';
-  if (mode === 'auto' || mode === 'AUTO') return 'auto';
-  return 'en-es';
+  if (mode === 'en-es' || mode === 'en→es' || mode === 'EN_ES') return 'en-es';
+  return 'auto';
 }
 
 function normalizeTargetLang(targetLang, mode) {

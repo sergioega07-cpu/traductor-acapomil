@@ -19,6 +19,7 @@ import { ProjectionView } from './components/ProjectionView';
 import { useMicCapture } from './hooks/useMicCapture';
 import { useTranslatorSocket } from './hooks/useTranslatorSocket';
 import { createSyncChannel } from './lib/broadcast';
+import { useSubtitleDisplay } from './lib/subtitleDisplay';
 import type { HistoryItem, SourceLang, TargetLang } from './lib/types';
 import { deriveMode } from './lib/types';
 import {
@@ -30,8 +31,6 @@ import {
   shouldWaitForRealTranslation,
   speakText,
   stopSpeaking,
-  textsLookIdentical,
-  isSpeaking,
   voicesForLang,
   waitForVoices,
 } from './lib/tts';
@@ -50,14 +49,14 @@ const DEMO_PHRASE = {
 const VOICE_URI_KEY = 'acapomil-tts-voice-uri';
 
 const SOURCE_OPTIONS: { value: SourceLang; label: string }[] = [
-  { value: 'auto', label: 'Detectar idioma' },
-  { value: 'es', label: 'Español' },
-  { value: 'en', label: 'Inglés' },
+  { value: 'auto', label: 'Conversación (EN ↔ ES)' },
+  { value: 'en', label: 'Inglés (solo un sentido →)' },
+  { value: 'es', label: 'Español (solo un sentido →)' },
 ];
 
 const TARGET_OPTIONS: { value: TargetLang; label: string }[] = [
-  { value: 'es', label: 'Español' },
-  { value: 'en', label: 'Inglés' },
+  { value: 'es', label: 'Español (audiencia)' },
+  { value: 'en', label: 'Inglés (audiencia)' },
 ];
 
 export default function App() {
@@ -68,7 +67,7 @@ export default function App() {
 function ControlPanel() {
   const mic = useMicCapture();
   const tx = useTranslatorSocket();
-  const [sourceLang, setSourceLang] = useState<SourceLang>('en');
+  const [sourceLang, setSourceLang] = useState<SourceLang>('auto');
   const [targetLang, setTargetLang] = useState<TargetLang>('es');
   const [autoVoice, setAutoVoice] = useState(true);
   const [voiceLang, setVoiceLang] = useState('es-CL');
@@ -81,15 +80,11 @@ function ControlPanel() {
   });
   const [voiceOptions, setVoiceOptions] = useState<SpeechSynthesisVoice[]>([]);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
-  const [followSpeak, setFollowSpeak] = useState(false);
   const [noSubtitleHint, setNoSubtitleHint] = useState(false);
   const syncRef = useRef<ReturnType<typeof createSyncChannel> | null>(null);
   const lastAutoId = useRef<string | null>(null);
   const listeningSinceRef = useRef<number | null>(null);
-  const followDebounceRef = useRef<number | null>(null);
-  const lastFollowSpokenRef = useRef('');
-  const followSpeakRef = useRef(false);
-  followSpeakRef.current = followSpeak;
+  const lastSpokenRef = useRef('');
 
   const mode = useMemo(() => deriveMode(sourceLang, targetLang), [sourceLang, targetLang]);
 
@@ -111,7 +106,6 @@ function ControlPanel() {
 
   const onTargetChange = (value: TargetLang) => {
     if (sourceLang !== 'auto' && sourceLang === value) {
-      // Si el origen igualaría al destino, intercambiar origen al otro idioma
       applyLangPair(value === 'es' ? 'en' : 'es', value);
       return;
     }
@@ -120,7 +114,6 @@ function ControlPanel() {
 
   const onSwapLanguages = () => {
     if (sourceLang === 'auto') {
-      // Estilo Google: el destino pasa a origen; el otro idioma a destino
       const newSource: SourceLang = targetLang;
       const newTarget: TargetLang = targetLang === 'es' ? 'en' : 'es';
       applyLangPair(newSource, newTarget);
@@ -176,60 +169,20 @@ function ControlPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const clearFollowDebounce = () => {
-    if (followDebounceRef.current != null) {
-      window.clearTimeout(followDebounceRef.current);
-      followDebounceRef.current = null;
-    }
-  };
-
-  const stopFollowSpeaking = () => {
-    clearFollowDebounce();
-    stopSpeaking();
-    setSpeakingId(null);
-    lastFollowSpokenRef.current = '';
-  };
-
-  const setFollowSpeakSynced = (on: boolean, broadcast: boolean) => {
-    setFollowSpeak(on);
-    followSpeakRef.current = on;
-    if (on) {
-      // Mutual exclusion: sticky listen owns the only speaking path
-      setAutoVoice(false);
-    }
-    if (!on) stopFollowSpeaking();
-    if (broadcast) {
-      syncRef.current?.post({ kind: 'speak_follow', on });
-      if (!on) syncRef.current?.post({ kind: 'speak_stop' });
-    }
-  };
-
-  const setAutoVoiceExclusive = (on: boolean) => {
-    if (on && followSpeakRef.current) {
-      setFollowSpeakSynced(false, true);
-    }
-    setAutoVoice(on);
-  };
-
   useEffect(() => {
     syncRef.current = createSyncChannel((msg) => {
       if (msg.kind === 'ping') {
         syncRef.current?.post({ kind: 'status', status: tx.status, mode });
         syncRef.current?.post({ kind: 'partial', partial: tx.partial, mode });
         syncRef.current?.post({ kind: 'history', items: tx.history });
-        syncRef.current?.post({ kind: 'speak_follow', on: followSpeakRef.current });
-      } else if (msg.kind === 'speak_follow') {
-        setFollowSpeakSynced(msg.on, false);
       }
     });
     return () => {
-      clearFollowDebounce();
       syncRef.current?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Sync projection window
   useEffect(() => {
     syncRef.current?.post({ kind: 'status', status: tx.status, mode });
   }, [tx.status, mode]);
@@ -241,115 +194,9 @@ function ControlPanel() {
   const modeRef = useRef(mode);
   const targetLangRef = useRef(targetLang);
   const voiceURIRef = useRef(voiceURI);
-  const historyRef = useRef(tx.history);
   modeRef.current = mode;
   targetLangRef.current = targetLang;
   voiceURIRef.current = voiceURI;
-  historyRef.current = tx.history;
-
-  const speakFollowLatest = (
-    text: string,
-    immediate: boolean,
-    opts?: { isFinal?: boolean; original?: string }
-  ) => {
-    const t = text.trim();
-    if (!t || !followSpeakRef.current) return;
-
-    // Sticky path: translation only — never fall back to original
-    if (
-      shouldWaitForRealTranslation(
-        modeRef.current,
-        opts?.original,
-        t,
-        targetLangRef.current
-      )
-    ) {
-      return;
-    }
-
-    const midSpeak = isSpeaking() || speakingId != null;
-    if (
-      shouldSkipDuplicateSpeak(t, lastFollowSpokenRef.current, {
-        midSpeak,
-        isFinal: opts?.isFinal,
-      })
-    ) {
-      return;
-    }
-
-    const run = () => {
-      if (!followSpeakRef.current) return;
-      if (
-        shouldWaitForRealTranslation(
-          modeRef.current,
-          opts?.original,
-          t,
-          targetLangRef.current
-        )
-      ) {
-        return;
-      }
-      if (
-        shouldSkipDuplicateSpeak(t, lastFollowSpokenRef.current, {
-          midSpeak: true,
-          isFinal: opts?.isFinal,
-        })
-      ) {
-        return;
-      }
-      // Interrupt-to-latest: speakText cancels queue + in-flight TTS
-      lastFollowSpokenRef.current = normalizeSpeakText(t);
-      const hist0 = historyRef.current[0];
-      const lang = langForTranslation(
-        modeRef.current,
-        hist0?.detectedLang,
-        targetLangRef.current
-      );
-      setSpeakingId('live');
-      // Local TTS only — projection mirrors via speak_follow + its own follow effect
-      speakText(
-        t,
-        lang,
-        () => setSpeakingId('live'),
-        () => setSpeakingId((id) => (id === 'live' ? null : id)),
-        voiceURIRef.current || null
-      );
-    };
-
-    clearFollowDebounce();
-    if (immediate) {
-      run();
-    } else {
-      followDebounceRef.current = window.setTimeout(run, 500);
-    }
-  };
-
-  // When sticky listen turns ON (local or via BroadcastChannel), speak current caption
-  const wasFollowSpeakRef = useRef(false);
-  useEffect(() => {
-    if (followSpeak && !wasFollowSpeakRef.current) {
-      const text = (tx.partial.translation || tx.history[0]?.translation || '').trim();
-      const original = (tx.partial.original || tx.history[0]?.original || '').trim();
-      if (text) {
-        lastFollowSpokenRef.current = '';
-        speakFollowLatest(text, true, { isFinal: true, original });
-      }
-    }
-    wasFollowSpeakRef.current = followSpeak;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [followSpeak]);
-
-  // Sticky listen: debounced partial translations only (never original)
-  useEffect(() => {
-    if (!followSpeak) return;
-    const text = tx.partial.translation?.trim();
-    if (!text) return;
-    speakFollowLatest(text, false, {
-      isFinal: false,
-      original: tx.partial.original,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tx.partial.translation, followSpeak]);
 
   useEffect(() => {
     const newest = tx.history[0];
@@ -357,20 +204,11 @@ function ControlPanel() {
     syncRef.current?.post({ kind: 'final', item: newest });
     if (newest.id === lastAutoId.current) return;
     if (!newest.translation?.trim()) return;
-
-    // Only ONE speaking path: sticky wins over autoVoice
-    if (followSpeak) {
-      lastAutoId.current = newest.id;
-      speakFollowLatest(newest.translation, true, {
-        isFinal: true,
-        original: newest.original,
-      });
-    } else if (autoVoice) {
-      lastAutoId.current = newest.id;
-      speakItem(newest);
-    }
+    if (!autoVoice) return;
+    lastAutoId.current = newest.id;
+    speakItem(newest);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tx.history, autoVoice, followSpeak]);
+  }, [tx.history, autoVoice]);
 
   useEffect(() => {
     const lang = langForTranslation(mode, undefined, targetLang);
@@ -379,7 +217,6 @@ function ControlPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, targetLang]);
 
-  // Mantener UI alineada si el servidor reporta otro modo
   useEffect(() => {
     if (tx.mode === 'en-es') {
       setSourceLang('en');
@@ -395,7 +232,6 @@ function ControlPanel() {
     }
   }, [tx.mode, tx.targetLang]);
 
-  // Soft hint: listening but no partial subtitles for 8s
   useEffect(() => {
     const active = tx.status === 'listening' || mic.capturing;
     const hasPartial = Boolean(tx.partial.original || tx.partial.translation);
@@ -437,16 +273,13 @@ function ControlPanel() {
   };
 
   const speakItem = (item: HistoryItem) => {
-    if (followSpeakRef.current) return; // sticky owns the only path
     const translation = item.translation?.trim();
     if (!translation) return;
-    if (
-      shouldWaitForRealTranslation(item.mode, item.original, translation, targetLang)
-    ) {
+    if (shouldWaitForRealTranslation(item.mode, item.original, translation, targetLang)) {
       return;
     }
     if (
-      shouldSkipDuplicateSpeak(translation, lastFollowSpokenRef.current, {
+      shouldSkipDuplicateSpeak(translation, lastSpokenRef.current, {
         isFinal: true,
       })
     ) {
@@ -455,9 +288,8 @@ function ControlPanel() {
     const lang = langForTranslation(item.mode, item.detectedLang, targetLang);
     setVoiceLang(lang);
     setSpeakingId(item.id);
-    lastFollowSpokenRef.current = normalizeSpeakText(translation);
+    lastSpokenRef.current = normalizeSpeakText(translation);
     syncRef.current?.post({ kind: 'speak', text: translation, lang, id: item.id });
-    // speakText always stopSpeaking()/cancels queue before a new utterance
     speakText(
       translation,
       lang,
@@ -465,14 +297,6 @@ function ControlPanel() {
       () => setSpeakingId(null),
       voiceURI || null
     );
-  };
-
-  const toggleFollowSpeak = () => {
-    if (followSpeak) {
-      setFollowSpeakSynced(false, true);
-      return;
-    }
-    setFollowSpeakSynced(true, true);
   };
 
   const onStart = async () => {
@@ -487,7 +311,7 @@ function ControlPanel() {
     tx.startSession(mode, targetLang);
     try {
       await mic.start((b64) => tx.sendAudio(b64));
-    } catch (e) {
+    } catch {
       tx.setError('No se pudo iniciar la captura de audio.');
       tx.stopSession();
     }
@@ -496,11 +320,10 @@ function ControlPanel() {
   const onStop = () => {
     mic.stop();
     tx.stopSession();
-    // Always clear sticky follow + TTS queue / interval / lastSpoken
-    setFollowSpeakSynced(false, true);
     stopSpeaking();
     setSpeakingId(null);
-    lastFollowSpokenRef.current = '';
+    lastSpokenRef.current = '';
+    syncRef.current?.post({ kind: 'speak_stop' });
   };
 
   const onClear = () => {
@@ -510,6 +333,10 @@ function ControlPanel() {
 
   const [demoItems, setDemoItems] = useState<HistoryItem[]>([]);
   const allHistory = [...demoItems, ...tx.history];
+
+  const liveOriginal = tx.partial.original || allHistory[0]?.original || '';
+  const liveTranslation = tx.partial.translation || allHistory[0]?.translation || '';
+  const subtitle = useSubtitleDisplay(liveOriginal, liveTranslation);
 
   const onTestPhrase = () => {
     const item: HistoryItem = {
@@ -538,8 +365,8 @@ function ControlPanel() {
 
   const pairLabel =
     sourceLang === 'auto'
-      ? `AUTO → ${targetLang === 'es' ? 'ESPAÑOL' : 'INGLÉS'}`
-      : `${sourceLang === 'es' ? 'ESPAÑOL' : 'INGLÉS'} → ${targetLang === 'es' ? 'ESPAÑOL' : 'INGLÉS'}`;
+      ? `CONVERSACIÓN EN ↔ ES · audiencia ${targetLang === 'es' ? 'ES' : 'EN'}`
+      : `${sourceLang === 'es' ? 'ES' : 'EN'} → ${targetLang === 'es' ? 'ES' : 'EN'} (un sentido)`;
 
   return (
     <div className="min-h-screen bg-acapomil-bg">
@@ -593,7 +420,6 @@ function ControlPanel() {
           </div>
         ) : null}
 
-        {/* 1) SUBTÍTULOS EN TIEMPO REAL — arriba */}
         <section className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -634,10 +460,9 @@ function ControlPanel() {
             </div>
           </div>
 
-          {/* Hero live subtitle stage — cinema caption style */}
           <article
             className={`relative w-full min-h-[40vh] md:min-h-[44vh] rounded-2xl border overflow-hidden flex flex-col ${
-              followSpeak || speakingId === 'live'
+              speakingId
                 ? 'listening-glow border-acapomil-green'
                 : tx.partial.original || tx.partial.translation || allHistory[0]
                   ? 'border-sky-500/40'
@@ -651,74 +476,37 @@ function ControlPanel() {
                 <span className="font-semibold tracking-wider">
                   EN VIVO · {pairLabel}
                 </span>
-                <button
-                  type="button"
-                  onClick={toggleFollowSpeak}
-                  disabled={
-                    !followSpeak && !(tx.partial.translation || allHistory[0]?.translation)
-                  }
-                  className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 disabled:opacity-40 ${
-                    followSpeak
-                      ? 'listening-glow border-acapomil-green text-acapomil-green'
-                      : 'border-white/15 text-gray-200 hover:bg-white/5'
-                  }`}
-                >
-                  <Volume2 className="h-3.5 w-3.5" />
-                  {followSpeak ? 'Cancelar escucha' : 'Escuchar subtítulo'}
-                </button>
+                {subtitle.showTranslatingBadge ? (
+                  <span className="rounded-md border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-sky-200">
+                    traduciendo…
+                  </span>
+                ) : null}
               </div>
 
               <div className="flex flex-1 flex-col items-center justify-end px-4 sm:px-8 md:px-12 pb-8 md:pb-10 pt-6 text-center">
-                {tx.partial.original || tx.partial.translation || allHistory[0] ? (
+                {subtitle.largeText || liveOriginal ? (
                   <>
-                    {(() => {
-                      const liveOriginal =
-                        tx.partial.original || allHistory[0]?.original || '';
-                      const liveTranslation =
-                        tx.partial.translation || allHistory[0]?.translation || '';
-                      const identical =
-                        Boolean(liveOriginal.trim()) &&
-                        textsLookIdentical(liveOriginal, liveTranslation);
-                      return (
-                        <>
-                          {!identical ? (
-                            <p
-                              className="w-full max-w-5xl text-gray-400/90 mb-3 md:mb-4 whitespace-pre-wrap break-words leading-relaxed"
-                              style={{
-                                fontSize: 'clamp(0.95rem, 1.4vw + 0.4rem, 1.35rem)',
-                              }}
-                            >
-                              {liveOriginal || '…'}
-                            </p>
-                          ) : (
-                            <p
-                              className="w-full max-w-5xl text-gray-400/90 mb-3 md:mb-4 whitespace-pre-wrap break-words leading-relaxed"
-                              style={{
-                                fontSize: 'clamp(0.95rem, 1.4vw + 0.4rem, 1.35rem)',
-                              }}
-                            >
-                              {liveOriginal}
-                              <span className="ml-2 text-sky-400/80 font-medium">
-                                · traduciendo…
-                              </span>
-                            </p>
-                          )}
-                          <div className="w-full max-w-6xl rounded-xl bg-black/45 px-4 py-5 md:px-8 md:py-7 border border-white/5 shadow-[0_8px_40px_rgba(0,0,0,0.45)]">
-                            <p
-                              className="font-semibold text-white whitespace-pre-wrap break-words"
-                              style={{
-                                fontSize: 'clamp(1.75rem, 4vw, 3.5rem)',
-                                lineHeight: 1.35,
-                              }}
-                            >
-                              {identical
-                                ? 'traduciendo…'
-                                : liveTranslation || '…'}
-                            </p>
-                          </div>
-                        </>
-                      );
-                    })()}
+                    {subtitle.originalLine ? (
+                      <p
+                        className="w-full max-w-5xl text-gray-400/90 mb-3 md:mb-4 whitespace-pre-wrap break-words leading-relaxed"
+                        style={{
+                          fontSize: 'clamp(0.95rem, 1.4vw + 0.4rem, 1.35rem)',
+                        }}
+                      >
+                        {subtitle.originalLine}
+                      </p>
+                    ) : null}
+                    <div className="w-full max-w-6xl rounded-xl bg-black/45 px-4 py-5 md:px-8 md:py-7 border border-white/5 shadow-[0_8px_40px_rgba(0,0,0,0.45)]">
+                      <p
+                        className="font-semibold text-white whitespace-pre-wrap break-words"
+                        style={{
+                          fontSize: 'clamp(1.75rem, 4vw, 3.5rem)',
+                          lineHeight: 1.35,
+                        }}
+                      >
+                        {subtitle.largeText || '…'}
+                      </p>
+                    </div>
                   </>
                 ) : (
                   <div className="flex flex-1 w-full flex-col items-center justify-center py-10 md:py-16">
@@ -762,7 +550,6 @@ function ControlPanel() {
           ) : null}
         </section>
 
-        {/* 2) Idiomas + voz + acciones */}
         <section className="rounded-2xl border border-acapomil-border bg-acapomil-card p-5 md:p-6 space-y-4">
           <div>
             <p className="mb-2 text-xs font-semibold tracking-wider text-acapomil-muted">
@@ -797,7 +584,7 @@ function ControlPanel() {
               </button>
 
               <label className="flex-1 min-w-0">
-                <span className="sr-only">Idioma de destino</span>
+                <span className="sr-only">Idioma de destino / sesgo audiencia</span>
                 <select
                   className="w-full rounded-xl border border-acapomil-border bg-[#0d1118] px-3 py-3 text-sm font-medium"
                   value={targetLang}
@@ -813,29 +600,32 @@ function ControlPanel() {
               </label>
             </div>
             <p className="mt-2 text-xs text-acapomil-muted">
-              Modo enviado al servidor: <span className="text-sky-300 font-semibold">{mode}</span>
+              Modo enviado al servidor:{' '}
+              <span className="text-sky-300 font-semibold">{mode}</span>
               {mode === 'auto' ? (
                 <>
                   {' '}
-                  · sesgo destino:{' '}
+                  · conversación bidireccional · sesgo audiencia:{' '}
                   <span className="text-sky-300 font-semibold">
                     {targetLang === 'es' ? 'español' : 'inglés'}
                   </span>
                 </>
-              ) : null}
+              ) : (
+                <> · solo un sentido</>
+              )}
             </p>
           </div>
 
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 rounded-xl border border-acapomil-border bg-[#0d1118] px-3 py-3">
             <button
               type="button"
-              onClick={() => setAutoVoiceExclusive(!autoVoice)}
+              onClick={() => setAutoVoice(!autoVoice)}
               className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium shrink-0 ${
                 autoVoice
                   ? 'border-acapomil-green/50 text-acapomil-green'
                   : 'border-white/10 text-acapomil-muted'
               }`}
-              title="Exclusivo con «Escuchar subtítulo»: solo una ruta de voz a la vez"
+              title="Única ruta de voz continua: lee en voz alta cada traducción final"
             >
               <Volume2 className="h-4 w-4" />
               VOZ AUTOMÁTICA: {autoVoice ? 'ACTIVADA' : 'DESACTIVADA'}
@@ -894,7 +684,6 @@ function ControlPanel() {
           ) : null}
         </section>
 
-        {/* 3) Micrófono / dispositivo — abajo */}
         <section className="rounded-2xl border border-acapomil-border bg-acapomil-card p-5 md:p-6">
           <p className="mb-2 text-xs font-semibold tracking-wider text-acapomil-muted">
             DISPOSITIVO DE AUDIO / MICRÓFONO
@@ -949,7 +738,7 @@ function ControlPanel() {
         </section>
 
         <footer className="pt-4 pb-8 text-center text-xs text-acapomil-muted">
-          Mic PCM 16 kHz → Gemini Live → WebSocket → UI · TTS opcional con speechSynthesis · Solo EN ↔ ES
+          Mic PCM 16 kHz → Gemini Live → WebSocket → UI · TTS con Voz automática · Conversación EN ↔ ES
         </footer>
       </div>
     </div>
