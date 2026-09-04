@@ -20,33 +20,16 @@ export function useTranslatorSocket() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [mode, setModeState] = useState<TranslateMode>('en-es');
   const intentionalClose = useRef(false);
+  const reconnectTimer = useRef<number | null>(null);
 
-  const connect = useCallback(() => {
-    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
-      return;
+  const clearReconnect = () => {
+    if (reconnectTimer.current != null) {
+      window.clearTimeout(reconnectTimer.current);
+      reconnectTimer.current = null;
     }
-    intentionalClose.current = false;
-    const ws = new WebSocket(wsUrl());
-    ws.binaryType = 'arraybuffer';
-    wsRef.current = ws;
+  };
 
-    ws.onopen = () => setStatus('ready');
-    ws.onclose = () => {
-      if (!intentionalClose.current) setStatus('disconnected');
-      wsRef.current = null;
-    };
-    ws.onerror = () => setError('Error de conexion WebSocket con el servidor');
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(String(ev.data)) as ServerMessage;
-        handleServer(msg);
-      } catch {
-        /* ignore */
-      }
-    };
-  }, []);
-
-  const handleServer = (msg: ServerMessage) => {
+  const handleServer = useCallback((msg: ServerMessage) => {
     switch (msg.type) {
       case 'status': {
         if (typeof msg.hasApiKey === 'boolean') setHasApiKey(msg.hasApiKey);
@@ -55,8 +38,10 @@ export function useTranslatorSocket() {
           setModeState(msg.mode);
         }
         const s = msg.status;
-        if (s === 'ready') setStatus('ready');
-        else if (s === 'connecting' || s === 'reconnecting') setStatus('connecting');
+        if (s === 'ready') {
+          setError(null);
+          setStatus('ready');
+        } else if (s === 'connecting' || s === 'reconnecting') setStatus('connecting');
         else if (s === 'listening' || s === 'connected' || s === 'setup_complete') setStatus('listening');
         else if (s === 'stopped') setStatus('stopped');
         else if (s === 'disconnected') setStatus('disconnected');
@@ -95,13 +80,55 @@ export function useTranslatorSocket() {
       default:
         break;
     }
-  };
+  }, []);
+
+  const connect = useCallback(() => {
+    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    intentionalClose.current = false;
+    clearReconnect();
+    const ws = new WebSocket(wsUrl());
+    ws.binaryType = 'arraybuffer';
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setError(null);
+      setStatus('ready');
+    };
+    ws.onclose = () => {
+      if (wsRef.current === ws) wsRef.current = null;
+      if (intentionalClose.current) return;
+      setStatus('disconnected');
+      // Reintento corto (cubre StrictMode / cierre prematuro)
+      reconnectTimer.current = window.setTimeout(() => {
+        if (!intentionalClose.current) connect();
+      }, 400);
+    };
+    ws.onerror = () => {
+      // No marcar error si estamos cerrando a proposito (React StrictMode)
+      if (intentionalClose.current) return;
+    };
+    ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(String(ev.data)) as ServerMessage;
+        handleServer(msg);
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [handleServer]);
 
   useEffect(() => {
     connect();
     return () => {
       intentionalClose.current = true;
-      wsRef.current?.close();
+      clearReconnect();
+      const ws = wsRef.current;
+      wsRef.current = null;
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        ws.close();
+      }
     };
   }, [connect]);
 
