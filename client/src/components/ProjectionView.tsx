@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Volume2 } from 'lucide-react';
 import { Crest } from './Crest';
 import { StatusPill } from './StatusPill';
@@ -20,10 +20,45 @@ export function ProjectionView() {
   const [partial, setPartial] = useState<PartialSubtitles>({ original: '', translation: '' });
   const [latest, setLatest] = useState<HistoryItem | null>(null);
   const [speaking, setSpeaking] = useState(false);
+  const [followSpeak, setFollowSpeak] = useState(false);
+
+  const channelRef = useRef<ReturnType<typeof createSyncChannel> | null>(null);
+  const followSpeakRef = useRef(false);
+  const followDebounceRef = useRef<number | null>(null);
+  const lastFollowSpokenRef = useRef('');
+  const modeRef = useRef(mode);
+  const latestRef = useRef(latest);
+  followSpeakRef.current = followSpeak;
+  modeRef.current = mode;
+  latestRef.current = latest;
 
   useEffect(() => {
     void waitForVoices();
   }, []);
+
+  const clearFollowDebounce = () => {
+    if (followDebounceRef.current != null) {
+      window.clearTimeout(followDebounceRef.current);
+      followDebounceRef.current = null;
+    }
+  };
+
+  const stopFollowSpeaking = () => {
+    clearFollowDebounce();
+    stopSpeaking();
+    setSpeaking(false);
+    lastFollowSpokenRef.current = '';
+  };
+
+  const applyFollowSpeak = (on: boolean, broadcast: boolean) => {
+    setFollowSpeak(on);
+    followSpeakRef.current = on;
+    if (!on) stopFollowSpeaking();
+    if (broadcast) {
+      channelRef.current?.post({ kind: 'speak_follow', on });
+      if (!on) channelRef.current?.post({ kind: 'speak_stop' });
+    }
+  };
 
   useEffect(() => {
     const channel = createSyncChannel((msg: SyncMessage) => {
@@ -41,14 +76,26 @@ export function ProjectionView() {
         setPartial({ original: '', translation: '' });
         setLatest(null);
       } else if (msg.kind === 'speak') {
+        // One-shot from control (history cards / auto-voice). Sticky follow speaks locally.
+        if (followSpeakRef.current) return;
         speakText(msg.text, msg.lang, () => setSpeaking(true), () => setSpeaking(false));
       } else if (msg.kind === 'speak_stop') {
-        stopSpeaking();
-        setSpeaking(false);
+        if (!followSpeakRef.current) {
+          stopSpeaking();
+          setSpeaking(false);
+        }
+      } else if (msg.kind === 'speak_follow') {
+        applyFollowSpeak(msg.on, false);
       }
     });
+    channelRef.current = channel;
     channel.post({ kind: 'ping' });
-    return () => channel.close();
+    return () => {
+      clearFollowDebounce();
+      channel.close();
+      channelRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const display = useMemo(() => {
@@ -61,10 +108,52 @@ export function ProjectionView() {
   const detected = latest?.detectedLang;
   const live = status === 'listening';
 
-  const onSpeak = () => {
+  const speakFollowLatest = (text: string, immediate: boolean) => {
+    const t = text.trim();
+    if (!t || !followSpeakRef.current) return;
+    if (t === lastFollowSpokenRef.current) return;
+
+    const run = () => {
+      if (!followSpeakRef.current) return;
+      if (!t || t === lastFollowSpokenRef.current) return;
+      lastFollowSpokenRef.current = t;
+      const lang = langForTranslation(modeRef.current, latestRef.current?.detectedLang);
+      speakText(t, lang, () => setSpeaking(true), () => setSpeaking(false));
+    };
+
+    clearFollowDebounce();
+    if (immediate) run();
+    else followDebounceRef.current = window.setTimeout(run, 500);
+  };
+
+  // When sticky turns ON, speak current caption once
+  const wasFollowSpeakRef = useRef(false);
+  useEffect(() => {
+    if (followSpeak && !wasFollowSpeakRef.current) {
+      if (display) {
+        lastFollowSpokenRef.current = '';
+        speakFollowLatest(display, true);
+      }
+    }
+    wasFollowSpeakRef.current = followSpeak;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [followSpeak]);
+
+  // Sticky: follow live display changes (partials debounced; finals prompt)
+  useEffect(() => {
+    if (!followSpeak) return;
     if (!display) return;
-    const lang = langForTranslation(mode, detected);
-    speakText(display, lang, () => setSpeaking(true), () => setSpeaking(false));
+    const isPartial = Boolean(partial.translation?.trim());
+    speakFollowLatest(display, !isPartial);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [display, followSpeak, partial.translation]);
+
+  const toggleFollowSpeak = () => {
+    if (followSpeak) {
+      applyFollowSpeak(false, true);
+      return;
+    }
+    applyFollowSpeak(true, true);
   };
 
   return (
@@ -142,16 +231,16 @@ export function ProjectionView() {
 
           <button
             type="button"
-            onClick={onSpeak}
-            disabled={!display}
-            className={`mt-6 md:mt-8 inline-flex items-center gap-2 rounded-xl border px-5 py-3 text-sm md:text-base font-semibold transition ${
-              speaking
+            onClick={toggleFollowSpeak}
+            disabled={!followSpeak && !display}
+            className={`mt-6 md:mt-8 inline-flex items-center gap-2 rounded-xl border px-5 py-3 text-sm md:text-base font-semibold transition disabled:opacity-40 ${
+              followSpeak || speaking
                 ? 'listening-glow border-acapomil-green text-acapomil-green'
-                : 'border-white/20 text-white hover:bg-white/5 disabled:opacity-40'
+                : 'border-white/20 text-white hover:bg-white/5'
             }`}
           >
             <Volume2 className="h-5 w-5" />
-            Escuchar subtitulo
+            {followSpeak ? 'Cancelar escucha' : 'Escuchar subtítulo'}
           </button>
         </div>
       </main>

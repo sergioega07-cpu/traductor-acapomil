@@ -76,10 +76,15 @@ function ControlPanel() {
   });
   const [voiceOptions, setVoiceOptions] = useState<SpeechSynthesisVoice[]>([]);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
+  const [followSpeak, setFollowSpeak] = useState(false);
   const [noSubtitleHint, setNoSubtitleHint] = useState(false);
   const syncRef = useRef<ReturnType<typeof createSyncChannel> | null>(null);
   const lastAutoId = useRef<string | null>(null);
   const listeningSinceRef = useRef<number | null>(null);
+  const followDebounceRef = useRef<number | null>(null);
+  const lastFollowSpokenRef = useRef('');
+  const followSpeakRef = useRef(false);
+  followSpeakRef.current = followSpeak;
 
   const mode = useMemo(() => deriveMode(sourceLang, targetLang), [sourceLang, targetLang]);
 
@@ -166,15 +171,46 @@ function ControlPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const clearFollowDebounce = () => {
+    if (followDebounceRef.current != null) {
+      window.clearTimeout(followDebounceRef.current);
+      followDebounceRef.current = null;
+    }
+  };
+
+  const stopFollowSpeaking = () => {
+    clearFollowDebounce();
+    stopSpeaking();
+    setSpeakingId(null);
+    lastFollowSpokenRef.current = '';
+  };
+
+  const setFollowSpeakSynced = (on: boolean, broadcast: boolean) => {
+    setFollowSpeak(on);
+    followSpeakRef.current = on;
+    if (!on) stopFollowSpeaking();
+    if (broadcast) {
+      syncRef.current?.post({ kind: 'speak_follow', on });
+      if (!on) syncRef.current?.post({ kind: 'speak_stop' });
+    }
+  };
+
   useEffect(() => {
     syncRef.current = createSyncChannel((msg) => {
       if (msg.kind === 'ping') {
         syncRef.current?.post({ kind: 'status', status: tx.status, mode });
         syncRef.current?.post({ kind: 'partial', partial: tx.partial, mode });
         syncRef.current?.post({ kind: 'history', items: tx.history });
+        syncRef.current?.post({ kind: 'speak_follow', on: followSpeakRef.current });
+      } else if (msg.kind === 'speak_follow') {
+        setFollowSpeakSynced(msg.on, false);
       }
     });
-    return () => syncRef.current?.close();
+    return () => {
+      clearFollowDebounce();
+      syncRef.current?.close();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Sync projection window
@@ -186,15 +222,90 @@ function ControlPanel() {
     syncRef.current?.post({ kind: 'partial', partial: tx.partial, mode });
   }, [tx.partial, mode]);
 
+  const modeRef = useRef(mode);
+  const targetLangRef = useRef(targetLang);
+  const voiceURIRef = useRef(voiceURI);
+  const historyRef = useRef(tx.history);
+  modeRef.current = mode;
+  targetLangRef.current = targetLang;
+  voiceURIRef.current = voiceURI;
+  historyRef.current = tx.history;
+
+  const speakFollowLatest = (text: string, immediate: boolean) => {
+    const t = text.trim();
+    if (!t || !followSpeakRef.current) return;
+    if (t === lastFollowSpokenRef.current) return;
+
+    const run = () => {
+      if (!followSpeakRef.current) return;
+      if (!t || t === lastFollowSpokenRef.current) return;
+      // Interrupt-to-latest: speakText already cancels in-flight TTS
+      lastFollowSpokenRef.current = t;
+      const hist0 = historyRef.current[0];
+      const lang = langForTranslation(
+        modeRef.current,
+        hist0?.detectedLang,
+        targetLangRef.current
+      );
+      setSpeakingId('live');
+      // Local TTS only — projection mirrors via speak_follow + its own follow effect
+      speakText(
+        t,
+        lang,
+        () => setSpeakingId('live'),
+        () => setSpeakingId((id) => (id === 'live' ? null : id)),
+        voiceURIRef.current || null
+      );
+    };
+
+    clearFollowDebounce();
+    if (immediate) {
+      run();
+    } else {
+      followDebounceRef.current = window.setTimeout(run, 500);
+    }
+  };
+
+  // When sticky listen turns ON (local or via BroadcastChannel), speak current caption
+  const wasFollowSpeakRef = useRef(false);
+  useEffect(() => {
+    if (followSpeak && !wasFollowSpeakRef.current) {
+      const text = (tx.partial.translation || tx.history[0]?.translation || '').trim();
+      if (text) {
+        lastFollowSpokenRef.current = '';
+        speakFollowLatest(text, true);
+      }
+    }
+    wasFollowSpeakRef.current = followSpeak;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [followSpeak]);
+
+  // Sticky listen: debounced partial translations
+  useEffect(() => {
+    if (!followSpeak) return;
+    const text = tx.partial.translation?.trim();
+    if (!text) return;
+    if (text === lastFollowSpokenRef.current) return;
+    speakFollowLatest(text, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tx.partial.translation, followSpeak]);
+
   useEffect(() => {
     const newest = tx.history[0];
     if (!newest) return;
     syncRef.current?.post({ kind: 'final', item: newest });
-    if (autoVoice && newest.id !== lastAutoId.current && newest.translation) {
+    if (newest.id === lastAutoId.current) return;
+    if (!newest.translation) return;
+
+    if (followSpeak) {
+      lastAutoId.current = newest.id;
+      speakFollowLatest(newest.translation, true);
+    } else if (autoVoice) {
       lastAutoId.current = newest.id;
       speakItem(newest);
     }
-  }, [tx.history, autoVoice]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tx.history, autoVoice, followSpeak]);
 
   useEffect(() => {
     const lang = langForTranslation(mode, undefined, targetLang);
@@ -274,19 +385,12 @@ function ControlPanel() {
     );
   };
 
-  const speakLive = () => {
-    const text = tx.partial.translation || tx.history[0]?.translation || '';
-    if (!text) return;
-    const lang = langForTranslation(mode, tx.history[0]?.detectedLang, targetLang);
-    setSpeakingId('live');
-    syncRef.current?.post({ kind: 'speak', text, lang, id: 'live' });
-    speakText(
-      text,
-      lang,
-      () => setSpeakingId('live'),
-      () => setSpeakingId(null),
-      voiceURI || null
-    );
+  const toggleFollowSpeak = () => {
+    if (followSpeak) {
+      setFollowSpeakSynced(false, true);
+      return;
+    }
+    setFollowSpeakSynced(true, true);
   };
 
   const onStart = async () => {
@@ -310,9 +414,13 @@ function ControlPanel() {
   const onStop = () => {
     mic.stop();
     tx.stopSession();
-    stopSpeaking();
-    setSpeakingId(null);
-    syncRef.current?.post({ kind: 'speak_stop' });
+    if (followSpeakRef.current) {
+      setFollowSpeakSynced(false, true);
+    } else {
+      stopSpeaking();
+      setSpeakingId(null);
+      syncRef.current?.post({ kind: 'speak_stop' });
+    }
   };
 
   const onClear = () => {
@@ -366,14 +474,19 @@ function ControlPanel() {
             </div>
             <StatusPill status={tx.status} />
           </div>
-          <button
-            type="button"
-            onClick={openProjection}
-            className="inline-flex items-center gap-2 rounded-lg border border-acapomil-blue/60 px-3 py-2 text-sm text-sky-300 hover:bg-acapomil-blue/10"
-          >
-            <Monitor className="h-4 w-4" />
-            MODO PROYECCIÓN
-          </button>
+          <div className="flex flex-col items-end gap-1">
+            <button
+              type="button"
+              onClick={openProjection}
+              className="inline-flex items-center gap-2 rounded-lg border border-acapomil-blue/60 px-3 py-2 text-sm text-sky-300 hover:bg-acapomil-blue/10"
+            >
+              <Monitor className="h-4 w-4" />
+              MODO PROYECCIÓN
+            </button>
+            <p className="max-w-[260px] text-right text-[11px] leading-snug text-acapomil-muted">
+              Úsalo en el televisor/proyector a pantalla completa (F11).
+            </p>
+          </div>
         </header>
 
         {tx.error || tx.status === 'disconnected' ? (
@@ -444,7 +557,7 @@ function ControlPanel() {
           {/* Hero live subtitle stage — cinema caption style */}
           <article
             className={`relative w-full min-h-[40vh] md:min-h-[44vh] rounded-2xl border overflow-hidden flex flex-col ${
-              speakingId === 'live'
+              followSpeak || speakingId === 'live'
                 ? 'listening-glow border-acapomil-green'
                 : tx.partial.original || tx.partial.translation || allHistory[0]
                   ? 'border-sky-500/40'
@@ -460,12 +573,18 @@ function ControlPanel() {
                 </span>
                 <button
                   type="button"
-                  onClick={speakLive}
-                  disabled={!(tx.partial.translation || allHistory[0]?.translation)}
-                  className="inline-flex items-center gap-1 rounded-md border border-white/15 px-2.5 py-1.5 text-gray-200 hover:bg-white/5 disabled:opacity-40"
+                  onClick={toggleFollowSpeak}
+                  disabled={
+                    !followSpeak && !(tx.partial.translation || allHistory[0]?.translation)
+                  }
+                  className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 disabled:opacity-40 ${
+                    followSpeak
+                      ? 'listening-glow border-acapomil-green text-acapomil-green'
+                      : 'border-white/15 text-gray-200 hover:bg-white/5'
+                  }`}
                 >
                   <Volume2 className="h-3.5 w-3.5" />
-                  Escuchar subtítulo
+                  {followSpeak ? 'Cancelar escucha' : 'Escuchar subtítulo'}
                 </button>
               </div>
 
