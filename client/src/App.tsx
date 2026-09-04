@@ -6,6 +6,7 @@ import {
   Play,
   RefreshCw,
   Shield,
+  Smartphone,
   Square,
   Volume2,
 } from 'lucide-react';
@@ -556,14 +557,18 @@ function ControlPanel() {
           <p className="mb-2 text-xs font-semibold tracking-wider text-acapomil-muted">
             DISPOSITIVO DE AUDIO / MICRÓFONO
           </p>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-acapomil-blue/20 text-sky-300">
               <Mic className="h-5 w-5" />
             </div>
             {mic.permission === 'granted' && mic.devices.length ? (
               <select
-                className="flex-1 rounded-lg border border-acapomil-border bg-[#0d1118] px-3 py-2.5 text-sm"
-                value={mic.deviceId}
+                className="flex-1 min-w-[12rem] rounded-lg border border-acapomil-border bg-[#0d1118] px-3 py-2.5 text-sm"
+                value={
+                  mic.devices.some((d) => d.deviceId === mic.deviceId)
+                    ? mic.deviceId
+                    : mic.deviceId || ''
+                }
                 onChange={(e) => mic.setDeviceId(e.target.value)}
                 onFocus={() => {
                   void mic.refreshDevices();
@@ -573,6 +578,11 @@ function ControlPanel() {
                 }}
                 disabled={listening}
               >
+                {!mic.devices.some((d) => d.deviceId === mic.deviceId) && mic.deviceId ? (
+                  <option value={mic.deviceId}>
+                    Micrófono de iPhone / Continuity (reconectando…)
+                  </option>
+                ) : null}
                 {mic.devices.map((d) => (
                   <option key={d.deviceId} value={d.deviceId}>
                     {d.label || `Micrófono ${d.deviceId.slice(0, 6)}`}
@@ -599,7 +609,22 @@ function ControlPanel() {
             >
               <RefreshCw className="h-4 w-4" />
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                void mic.scanPhoneMic();
+              }}
+              disabled={listening || mic.scanning}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2.5 text-sm font-medium text-sky-200 hover:bg-sky-500/20 disabled:opacity-50"
+              title="Buscar micrófono Continuity / iPhone"
+            >
+              <Smartphone className="h-4 w-4" />
+              {mic.scanning ? 'Buscando…' : 'Buscar iPhone'}
+            </button>
           </div>
+          <p className="mt-2 text-xs text-acapomil-muted">
+            iPhone desbloqueado y cerca · Ajustes Mac → Continuity
+          </p>
         </section>
       </div>
     </div>
